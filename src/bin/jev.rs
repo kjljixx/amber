@@ -23,6 +23,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+#[path = "../speed_control.rs"]
+mod speed_control;
+use speed_control::SpeedControl;
+
 /// Keep the input cursor out of the gradient while its cells are being updated.
 /// End synchronization even when drawing fails, so the terminal is not held.
 fn synchronized_draw<W: io::Write>(
@@ -38,7 +42,7 @@ fn synchronized_draw<W: io::Write>(
     finish
 }
 
-const HELP: &str = "Usage: jev [--prompt TEXT] [--output FILE]\n\nWithout --output, opens an interactive gradient generator.\nWith --output, generates a JSON recipe and exits. Requires --prompt.\n\nEnter: generate | Ctrl+P: pause | Esc / Ctrl+C: quit\nReads OPENROUTER_API_KEY and optional JEV_MODEL from the environment or .env.";
+const HELP: &str = "Usage: jev [--prompt TEXT] [--output FILE]\n\nWithout --output, opens an interactive gradient generator.\nWith --output, generates a JSON recipe and exits. Requires --prompt.\n\nEnter: generate | Ctrl+P: pause | Up/Down: speed | Esc / Ctrl+C: quit\nReads OPENROUTER_API_KEY and optional JEV_MODEL from the environment or .env.";
 
 #[derive(Default)]
 struct Options {
@@ -208,23 +212,22 @@ impl Generator {
     }
 }
 
-fn apply(view: &mut GradientView, gradient: &GeneratedGradient) -> io::Result<()> {
+fn apply(
+    view: &mut GradientView,
+    gradient: &GeneratedGradient,
+    speed: &mut SpeedControl,
+) -> io::Result<()> {
     view.set_recipe(&gradient.recipe)
         .map_err(io::Error::other)?;
-    view.set_timing(
-        Duration::from_millis(50),
-        gradient.radians_per_second,
-        Instant::now(),
-    )
-    .map_err(io::Error::other)
+    speed.set_base(gradient.radians_per_second, view)
 }
 
 fn interactive(mut prompt: String) -> io::Result<()> {
     prompt.retain(|c| !c.is_control());
     let mut view = GradientView::new(&presets::presets()[1].recipe, Instant::now())
         .map_err(io::Error::other)?;
-    view.set_timing(Duration::from_millis(50), 0.15, Instant::now())
-        .map_err(io::Error::other)?;
+    let mut speed = SpeedControl::new(0.15);
+    speed.apply(&mut view)?;
     let mut generator = Generator::new();
     if !prompt.is_empty() {
         generator.submit(&prompt);
@@ -234,7 +237,7 @@ fn interactive(mut prompt: String) -> io::Result<()> {
         loop {
             if let Some(result) = generator.poll() {
                 if let Ok(gradient) = result {
-                    apply(&mut view, &gradient)?;
+                    apply(&mut view, &gradient, &mut speed)?;
                 }
                 redraw = true;
             }
@@ -252,7 +255,7 @@ fn interactive(mut prompt: String) -> io::Result<()> {
                         Layout::vertical([Constraint::Length(1); 3]).areas(panel);
                     frame.render_widget(
                         Paragraph::new(
-                            "Describe a gradient · Enter: generate · Ctrl+P: pause · Esc: quit",
+                            "Describe a gradient · Enter: generate · Ctrl+P: pause · Up/Down: speed · Esc: quit",
                         )
                         .style(style),
                         help,
@@ -265,7 +268,12 @@ fn interactive(mut prompt: String) -> io::Result<()> {
                     }
                     frame.render_widget(Paragraph::new(format!("> {visible}")).style(style), input);
                     frame.render_widget(
-                        Paragraph::new(generator.status.as_str()).style(style),
+                        Paragraph::new(format!(
+                            "Speed {:.2}x · {}",
+                            speed.multiplier(),
+                            generator.status
+                        ))
+                        .style(style),
                         status,
                     );
                     if input.width >= 3 && input.height > 0 {
@@ -300,9 +308,13 @@ fn interactive(mut prompt: String) -> io::Result<()> {
                             playback.playing = !playback.playing;
                             view.set_playback(playback, Instant::now());
                         }
+                        KeyCode::Up | KeyCode::Down => {
+                            speed
+                                .change(if key.code == KeyCode::Up { 1 } else { -1 }, &mut view)?;
+                        }
                         KeyCode::Enter => {
                             if let Some(cached) = generator.submit(&prompt) {
-                                apply(&mut view, &cached)?;
+                                apply(&mut view, &cached, &mut speed)?;
                             }
                         }
                         KeyCode::Backspace => {

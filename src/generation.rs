@@ -41,6 +41,7 @@ pub enum Layout {
     Horizon,
     Glow,
     Scatter,
+    Superscatter,
     Wash,
 }
 
@@ -200,7 +201,8 @@ pub fn decision_request(prompt: &str, model: &str) -> Result<Value, String> {
                 "sky":"Broad horizontal color regions changing from top to bottom",
                 "horizon":"A bright seam separating upper and lower color regions",
                 "glow":"A luminous central region with a darker outer region",
-                "scatter":"Multiple colored regions distributed across the image",
+                "scatter":"Broad, softly connected colored regions distributed across the image",
+                "superscatter":"Many smaller irregular color pockets interspersed throughout the image, like confetti, mosaic colors, or scattered lights",
                 "wash":"Mostly one color with gentle, subtle variations"
             }},
             "lightness": score("How light should this gradient feel?", &["Very dark", "Dark", "Medium", "Light", "Very light"]),
@@ -340,12 +342,24 @@ impl Design {
         let base = 0.28 + self.lightness * 0.15;
         let contrast = 0.10 + self.contrast / 3.0 * 0.24;
         let scatter_phase = random() * std::f32::consts::TAU;
-        let mut points = Vec::new();
+        let mut points: Vec<Point> = Vec::new();
+        let scattered_positions = if self.layout == Layout::Superscatter {
+            superscatter_positions(&mut random)
+        } else {
+            Vec::new()
+        };
+        let mut assigned_families = Vec::new();
         // Eighteen color centers cover edges as well as the interior.
         for row in 0..6 {
             for column in 0..3 {
-                let x = (column as f32 / 2.0 + (random() - 0.5) * 0.08).clamp(0.0, 1.0);
-                let y = (row as f32 / 5.0 + (random() - 0.5) * 0.06).clamp(0.0, 1.0);
+                let [x, y] = if self.layout == Layout::Superscatter {
+                    scattered_positions[row * 3 + column]
+                } else {
+                    [
+                        (column as f32 / 2.0 + (random() - 0.5) * 0.08).clamp(0.0, 1.0),
+                        (row as f32 / 5.0 + (random() - 0.5) * 0.06).clamp(0.0, 1.0),
+                    ]
+                };
                 let distance = (x - 0.5).hypot((y - 0.5) * 1.2);
                 let (index, shade) = match self.layout {
                     Layout::Sky => (
@@ -393,6 +407,28 @@ impl Design {
                             (value - 0.5) * 1.6,
                         )
                     }
+                    Layout::Superscatter => {
+                        let mut counts = [0; 3];
+                        let mut penalties = [0.0_f32; 3];
+                        for (point, &family) in points.iter().zip(&assigned_families) {
+                            counts[family] += 1;
+                            let distance = (x - point.position[0]).hypot(y - point.position[1]);
+                            penalties[family] += 1.0 / distance.max(0.03).powi(2);
+                        }
+                        // Primary / secondary / accent quotas retain palette hierarchy.
+                        // Normalize neighbor penalties so the primary can recur more often.
+                        let targets = [9, 6, 3];
+                        for family in 0..3 {
+                            penalties[family] /= targets[family] as f32;
+                        }
+                        let start = (random() * 3.0) as usize;
+                        let index = (0..3)
+                            .map(|offset| (start + offset) % 3)
+                            .filter(|&family| counts[family] < targets[family])
+                            .min_by(|&a, &b| penalties[a].total_cmp(&penalties[b]))
+                            .unwrap();
+                        (index, (random() - 0.5) * 1.2)
+                    }
                     Layout::Wash => (
                         if row == 3 && column == 1 {
                             1
@@ -404,6 +440,7 @@ impl Design {
                         (random() - 0.5) * 0.4,
                     ),
                 };
+                assigned_families.push(index);
                 let (hue, chroma, preferred_light) = families[index];
                 let light = (base + shade * contrast) * 0.6 + preferred_light * 0.4;
                 let light = (light + (random() - 0.5) * 0.04).clamp(0.08, 0.97);
@@ -418,7 +455,11 @@ impl Design {
         let energy = self.energy / 4.0;
         let recipe = Recipe {
             points,
-            softness: 0.36 + 0.22 * self.focus / 3.0,
+            softness: if self.layout == Layout::Superscatter {
+                0.24 + 0.18 * self.focus / 3.0
+            } else {
+                0.36 + 0.22 * self.focus / 3.0
+            },
             distortion: 0.8 + 0.5 * energy,
             swirl: if energy > 0.5 {
                 (random() - 0.5) * 0.6 * (energy - 0.5) * 2.0
@@ -427,10 +468,39 @@ impl Design {
             },
             seed: 58,
             motion: 0.3 + 0.6 * energy,
+            motion_style: match self.layout {
+                Layout::Sky | Layout::Horizon => crate::MotionStyle::Flow,
+                Layout::Glow | Layout::Scatter | Layout::Superscatter | Layout::Wash => {
+                    crate::MotionStyle::Wander
+                }
+            },
         };
         recipe.compile().map_err(str::to_string)?;
         Ok(recipe)
     }
+}
+
+// Best-candidate sampling spreads points without imposing rows or columns.
+fn superscatter_positions(random: &mut impl FnMut() -> f32) -> Vec<[f32; 2]> {
+    let mut positions: Vec<[f32; 2]> = Vec::with_capacity(18);
+    for _ in 0..18 {
+        let mut best = [random(), random()];
+        let mut best_distance = -1.0;
+        for _ in 0..24 {
+            let candidate = [random(), random()];
+            let distance = positions
+                .iter()
+                .map(|point| (candidate[0] - point[0]).powi(2) + (candidate[1] - point[1]).powi(2))
+                .fold(f32::INFINITY, f32::min);
+            if distance > best_distance {
+                best = candidate;
+                best_distance = distance;
+            }
+        }
+        positions
+            .push(best.map(|coordinate| (coordinate + (random() - 0.5) * 0.02).clamp(0.0, 1.0)));
+    }
+    positions
 }
 
 #[cfg(test)]
@@ -496,6 +566,7 @@ mod tests {
             Layout::Horizon,
             Layout::Glow,
             Layout::Scatter,
+            Layout::Superscatter,
             Layout::Wash,
         ] {
             design.layout = layout;
@@ -512,6 +583,44 @@ mod tests {
             design.saturation = score;
             design.energy = score;
             assert!(design.to_recipe("extreme").unwrap().compile().is_ok());
+        }
+    }
+
+    #[test]
+    fn superscatter_decision_keeps_eighteen_separated_points() {
+        let mut response = fixture();
+        response["answers"]["layout"]["choice"] = json!("superscatter");
+        let envelope: Envelope = serde_json::from_value(response).unwrap();
+        let design = parse_design(&envelope.answers).unwrap();
+        assert_eq!(design.layout, Layout::Superscatter);
+        assert!(
+            decision_request("confetti", DEFAULT_MODEL).unwrap()["questions"]["layout"]["criteria"]
+                .get("superscatter")
+                .is_some()
+        );
+        for prompt in [
+            "confetti",
+            "scattered lights",
+            "mosaic",
+            "wildflowers",
+            "rainbow pockets",
+        ] {
+            let recipe = design.to_recipe(prompt).unwrap();
+            assert_eq!(recipe.points.len(), 18);
+            assert_eq!(recipe.motion_style, crate::MotionStyle::Wander);
+            for (index, point) in recipe.points.iter().enumerate() {
+                for other in &recipe.points[..index] {
+                    assert!(
+                        (point.position[0] - other.position[0])
+                            .hypot(point.position[1] - other.position[1])
+                            > 0.1,
+                        "points collide for {prompt}"
+                    );
+                }
+            }
+            let mut scatter = design.clone();
+            scatter.layout = Layout::Scatter;
+            assert!(recipe.softness < scatter.to_recipe(prompt).unwrap().softness);
         }
     }
 

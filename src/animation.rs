@@ -7,6 +7,7 @@ const PHASE_PER_SECOND: f64 = 3.0;
 /// Advances by elapsed time and schedules one frame at a time, without a backlog.
 pub struct Animation {
     phase: f64,
+    travel: f64,
     running: bool,
     last_frame: Instant,
     next_frame: Instant,
@@ -18,12 +19,17 @@ impl Animation {
     pub fn new(now: Instant) -> Self {
         Self {
             phase: 0.0,
+            travel: 0.0,
             running: true,
             last_frame: now,
             next_frame: now + FRAME_INTERVAL,
             interval: FRAME_INTERVAL,
             speed: PHASE_PER_SECOND,
         }
+    }
+
+    pub fn travel(&self) -> f64 {
+        self.travel
     }
 
     pub fn phase(&self) -> f32 {
@@ -63,6 +69,7 @@ impl Animation {
             return false;
         }
         let elapsed = now.duration_since(self.last_frame).as_secs_f64();
+        self.travel += elapsed * self.speed;
         // Reduce elapsed time first so large finite speeds cannot overflow.
         let advance = if self.speed > 0.0 {
             (elapsed % (std::f64::consts::TAU / self.speed)) * self.speed
@@ -85,6 +92,21 @@ impl Animation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_clock_survives_cycles_and_excludes_paused_time() {
+        let start = Instant::now();
+        let mut animation = Animation::new(start);
+        animation.tick(start + Duration::from_secs(20));
+        assert_eq!(animation.travel(), 60.0);
+        assert!(animation.phase() < std::f32::consts::TAU);
+        animation.set_running(false, start + Duration::from_secs(20));
+        animation.tick(start + Duration::from_secs(100));
+        assert_eq!(animation.travel(), 60.0);
+        animation.set_running(true, start + Duration::from_secs(100));
+        animation.tick(start + Duration::from_secs(101));
+        assert_eq!(animation.travel(), 63.0);
+    }
 
     #[test]
     fn waits_until_the_frame_deadline() {

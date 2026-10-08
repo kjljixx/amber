@@ -3,6 +3,16 @@ use crate::{
     warp::Warp,
 };
 
+/// Motion independent of the color layout. Older JSON recipes keep looping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionStyle {
+    #[default]
+    Loop,
+    Flow,
+    Wander,
+}
+
 /// Plain gradient settings, independent of terminal size and playback controls.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -13,6 +23,8 @@ pub struct Recipe {
     pub swirl: f32,
     pub seed: u16,
     pub motion: f32,
+    #[serde(default)]
+    pub motion_style: MotionStyle,
 }
 
 /// Validated settings with color conversions and seeded warp setup cached.
@@ -20,6 +32,7 @@ pub struct CompiledRecipe {
     gradient: Gradient,
     warp: Warp,
     motion: f32,
+    motion_style: MotionStyle,
 }
 
 impl Recipe {
@@ -54,6 +67,7 @@ impl Recipe {
             gradient: Gradient::new(&self.points, self.softness)?,
             warp: Warp::new(self.distortion, self.swirl, self.seed)?,
             motion: self.motion,
+            motion_style: self.motion_style,
         })
     }
 }
@@ -66,14 +80,32 @@ impl CompiledRecipe {
         warped: bool,
         drifting: bool,
     ) -> PreparedGradient {
-        self.gradient
-            .prepare(aspect)
-            .with_drift(phase, if drifting { self.motion } else { 0.0 })
-            .with_warp(if warped {
-                self.warp.at_time(phase)
-            } else {
-                Warp::default()
-            })
+        self.prepare_at(aspect, phase, f64::from(phase), warped, drifting)
+    }
+
+    /// `travel` advances without wrapping; `phase` controls periodic effects.
+    pub fn prepare_at(
+        &self,
+        aspect: f32,
+        phase: f32,
+        travel: f64,
+        warped: bool,
+        drifting: bool,
+    ) -> PreparedGradient {
+        let motion = if drifting { self.motion } else { 0.0 };
+        let field = self.gradient.prepare(aspect);
+        let field = match self.motion_style {
+            MotionStyle::Loop => field.with_drift(phase, motion),
+            MotionStyle::Flow => field,
+            MotionStyle::Wander => field.with_wander(travel, motion, self.warp.seed()),
+        };
+        field.with_warp(if !warped {
+            Warp::default()
+        } else if self.motion_style == MotionStyle::Loop {
+            self.warp.at_time(phase)
+        } else {
+            self.warp.at_flow(phase, travel, motion)
+        })
     }
 }
 
@@ -82,6 +114,33 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = include_str!("../examples/complex.json");
+
+    #[test]
+    fn continuous_motion_preserves_initial_layout_and_does_not_repeat_at_tau() {
+        let mut recipe = crate::presets::presets()[1].recipe.clone();
+        let static_field = recipe.compile().unwrap().prepare(1.0, 0.0, true, false);
+        for style in [MotionStyle::Flow, MotionStyle::Wander] {
+            recipe.motion_style = style;
+            let compiled = recipe.compile().unwrap();
+            let initial = compiled.prepare_at(1.0, 0.0, 0.0, true, true);
+            let next_cycle = compiled.prepare_at(1.0, 0.0, std::f64::consts::TAU, true, true);
+            let samples = |field: &PreparedGradient| {
+                (0..100)
+                    .map(|i| field.sample((i % 10) as f32 / 9.0, (i / 10) as f32 / 9.0))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(samples(&initial), samples(&static_field));
+            assert_ne!(samples(&initial), samples(&next_cycle));
+            let disabled = compiled.prepare_at(1.0, 0.0, 100.0, true, false);
+            assert_eq!(samples(&disabled), samples(&static_field));
+        }
+        assert_eq!(
+            serde_json::from_str::<Recipe>(EXAMPLE)
+                .unwrap()
+                .motion_style,
+            MotionStyle::Loop
+        );
+    }
 
     #[test]
     fn example_json_matches_complex_preset() {

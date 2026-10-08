@@ -1,11 +1,13 @@
 /// Domain warping: change the sampling position, not the color points.
 #[derive(Clone, Copy, Default)]
 pub struct Warp {
+    seed: u16,
     distortion: f32,
     swirl: f32,
     seed_offset: [f32; 2],
     time: f32,
     noise_offset: [f32; 2],
+    fold_offset: [f32; 2],
     swirl_pulse: f32,
 }
 
@@ -20,13 +22,16 @@ impl Warp {
         if seed > 999 {
             return Err("seed must be between 0 and 999");
         }
+        let seed_id = seed;
         let seed = f32::from(seed);
         Ok(Self {
+            seed: seed_id,
             distortion,
             swirl,
             seed_offset: [fract(seed * 0.1371) * 40.0, fract(seed * 0.2113) * 40.0],
             time: 0.0,
             noise_offset: [0.0, 0.0],
+            fold_offset: [0.0, 0.0],
             swirl_pulse: 1.0,
         })
     }
@@ -34,9 +39,24 @@ impl Warp {
     pub fn at_time(mut self, time: f32) -> Self {
         let (sin, cos) = time.sin_cos();
         self.time = time;
+        self.fold_offset = [0.0, 0.0];
         // Anchor the orbit at zero so the first frame matches the static warp.
         self.noise_offset = [(cos - 1.0) * 0.12, sin * 0.12];
         self.swirl_pulse = 1.0 + 0.2 * sin;
+        self
+    }
+
+    pub fn seed(&self) -> u16 {
+        self.seed
+    }
+
+    /// Advect the distortion field while retaining periodic swirl pulsing.
+    pub fn at_flow(mut self, phase: f32, travel: f64, motion: f32) -> Self {
+        self.time = 0.0;
+        let distance = (travel * f64::from(motion) * 0.08) as f32;
+        self.noise_offset = [-distance, -distance * 0.35];
+        self.fold_offset = self.noise_offset;
+        self.swirl_pulse = 1.0 + 0.2 * phase.sin();
         self
     }
 
@@ -55,9 +75,11 @@ impl Warp {
         let [sx, sy] = self.seed_offset;
         let t = self.time;
         let [ox, oy] = self.noise_offset;
+        let [fx, fy] = self.fold_offset;
         // Broad folds, followed by two layers of organic noise displacement.
-        y += self.distortion * (0.13 * (x * 2.3 + sx + t).sin() + 0.05 * (x * 4.7 + sy - t).sin());
-        x += self.distortion * 0.06 * (y * 2.9 + sy + t).sin();
+        y += self.distortion
+            * (0.13 * ((x + fx) * 2.3 + sx + t).sin() + 0.05 * ((x + fx) * 4.7 + sy - t).sin());
+        x += self.distortion * 0.06 * ((y + fy) * 2.9 + sy + t).sin();
 
         let nx = fbm([x * 1.3 + sx + ox, y * 1.3 + sy + oy]) - 0.45;
         let ny = fbm([x * 1.3 + sy + 7.3 - ox, y * 1.3 + sx + 7.3 - oy]) - 0.45;

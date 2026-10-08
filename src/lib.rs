@@ -17,5 +17,5 @@ mod warp;
 pub use color::Rgb;
 pub use gradient::{Point, PreparedGradient};
 pub use half_blocks::{HalfBlocks, Preview};
-pub use recipe::{CompiledRecipe, Recipe};
+pub use recipe::{CompiledRecipe, MotionStyle, Recipe};
 pub use view::{GradientView, Playback, RenderStats};

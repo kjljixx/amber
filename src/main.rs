@@ -7,6 +7,8 @@ use ratatui::{
 };
 
 mod cli;
+mod speed_control;
+use speed_control::SpeedControl;
 
 use amber::{GradientView, Recipe, presets};
 
@@ -42,6 +44,8 @@ fn run() -> io::Result<()> {
     }
     let mut view =
         GradientView::new(&presets[mode].recipe, Instant::now()).map_err(io::Error::other)?;
+    let mut speed = SpeedControl::new(3.0);
+    speed.set_base(3.0, &mut view)?;
     let mut redraw = true;
     let mut previous_frame_ms = 0.0;
 
@@ -60,11 +64,12 @@ fn run() -> io::Result<()> {
                     let playback = view.playback();
                     frame.render_widget(
                         Paragraph::new(format!(
-                            "Space: {} | w: {} | d: {} | q: quit\nm: {} | sampling: {:.1}ms | previous frame: {:.1}ms",
+                            "Space: {} | w: {} | d: {} | Up/Down: speed | q: quit\nm: {} | speed: {:.2}x | sampling: {:.1}ms | previous frame: {:.1}ms",
                             if playback.playing { "pause" } else { "resume" },
                             if playback.warped { "on" } else { "off" },
                             if playback.drifting { "on" } else { "off" },
                             presets[mode].name,
+                            speed.multiplier(),
                             view.stats().sampling.as_secs_f64() * 1000.0,
                             previous_frame_ms,
                         )),
@@ -90,6 +95,11 @@ fn run() -> io::Result<()> {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(());
+                        }
+                        KeyCode::Up | KeyCode::Down => {
+                            speed
+                                .change(if key.code == KeyCode::Up { 1 } else { -1 }, &mut view)?;
+                            redraw = true;
                         }
                         KeyCode::Char('m') => {
                             mode = (mode + 1) % presets.len();

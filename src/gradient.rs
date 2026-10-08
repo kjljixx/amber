@@ -94,6 +94,23 @@ impl PreparedGradient {
         self
     }
 
+    /// Smooth seeded motion with no prescribed repeating cycle.
+    /// Subtract the initial noise value so time zero preserves the layout.
+    pub fn with_wander(mut self, travel: f64, motion: f32, seed: u16) -> Self {
+        assert!(travel.is_finite() && travel >= 0.0);
+        assert!(motion.is_finite() && (0.0..=1.5).contains(&motion));
+        let time = travel * 0.18;
+        let amplitude = motion * 0.06;
+        for (index, point) in self.points.iter_mut().enumerate() {
+            let key = u64::from(seed) * 131 + index as u64 * 2;
+            point.position[0] +=
+                amplitude * (wander_noise(time, key) - wander_noise(0.0, key)) * self.x_scale;
+            point.position[1] +=
+                amplitude * (wander_noise(time, key + 1) - wander_noise(0.0, key + 1));
+        }
+        self
+    }
+
     pub fn with_warp(mut self, warp: Warp) -> Self {
         self.warp = warp;
         self
@@ -125,6 +142,22 @@ impl PreparedGradient {
     }
 }
 
+// Smooth one-dimensional value noise. Integer hashing avoids the precision
+// loss of floating-point sine hashes and makes trajectories deterministic.
+fn wander_noise(time: f64, seed: u64) -> f32 {
+    let cell = time.floor() as u64;
+    let value = |index: u64| {
+        let mut hash = index.wrapping_add(seed.wrapping_mul(0x9e3779b97f4a7c15));
+        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d049bb133111eb);
+        hash ^= hash >> 31;
+        (hash >> 40) as f64 / ((1u64 << 24) - 1) as f64 * 2.0 - 1.0
+    };
+    let fraction = time - time.floor();
+    let fade = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
+    (value(cell) * (1.0 - fade) + value(cell.wrapping_add(1)) * fade) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +177,30 @@ mod tests {
             softness,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn wandering_is_bounded_seeded_and_smooth_across_noise_cells() {
+        let gradient = pair(0.5);
+        let fixed = gradient.prepare(2.0);
+        for time in [0.0, 1.0, 10.0, 1000.0, 1000000.0] {
+            let field = gradient.prepare(2.0).with_wander(time, 0.8, 58);
+            for (moving, anchor) in field.points.iter().zip(&fixed.points) {
+                assert!(
+                    (moving.position[0] - anchor.position[0]).abs()
+                        <= 0.8 * 0.12 * field.x_scale + 1e-6
+                );
+                assert!((moving.position[1] - anchor.position[1]).abs() <= 0.8 * 0.12 + 1e-6);
+            }
+        }
+        let boundary = 1.0 / 0.18;
+        let before = gradient.prepare(2.0).with_wander(boundary - 1e-5, 0.8, 58);
+        let after = gradient.prepare(2.0).with_wander(boundary + 1e-5, 0.8, 58);
+        for (a, b) in before.points.iter().zip(&after.points) {
+            assert!((a.position[0] - b.position[0]).abs() < 1e-5);
+            assert!((a.position[1] - b.position[1]).abs() < 1e-5);
+        }
+        assert_ne!(wander_noise(2.5, 58), wander_noise(2.5, 59));
     }
 
     #[test]

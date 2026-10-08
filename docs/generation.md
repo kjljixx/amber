@@ -1,6 +1,8 @@
 # Prompt-driven gradients with Jev
 
 Start the generator with `cargo run --offline --bin jev`.
+Use Up / Down to change animation speed from 0.125x to 16x.
+The multiplier stays selected when you generate another gradient; Ctrl+P pauses.
 Type a description and press Enter. Ctrl+P pauses motion; Esc or Ctrl+C exits.
 The original `cargo run` renderer demo and JSON loading remain available.
 
@@ -32,8 +34,10 @@ description
 ```
 
 Jev chooses bounded values rather than writing JSON coordinates or rendering
-code. Palette conversion and point placement happen locally. Five layouts are
-available: sky, horizon, glow, scatter, and wash. The website uses this same
+code. Palette conversion and point placement happen locally. Six layouts are
+available: sky, horizon, glow, scatter, superscatter, and wash. Superscatter uses
+18 irregularly spaced points (9 primary, 6 secondary, 3 accent), spreads the
+color families throughout the image, and reduces softness to keep smaller pockets visible. The website uses this same
 decision-to-composition approach; our point placement is adapted for this renderer.
 No prism, grain, zoom, or seed randomization is added. Seed stays 58.
 

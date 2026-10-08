@@ -131,9 +131,10 @@ impl GradientView {
         let start = Instant::now();
         if area.width > 0 && area.height > 0 {
             let aspect = f32::from(area.width) / (2.0 * f32::from(area.height));
-            let field = self.recipe.prepare(
+            let field = self.recipe.prepare_at(
                 aspect,
                 self.animation.phase(),
+                self.animation.travel(),
                 self.playback.warped,
                 self.playback.drifting,
             );

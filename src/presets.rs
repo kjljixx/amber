@@ -105,6 +105,7 @@ pub fn presets() -> [Preset; 2] {
                 swirl: 0.45,
                 seed: 58,
                 motion: 0.5,
+                motion_style: crate::MotionStyle::Loop,
             },
         },
         Preset {
@@ -116,6 +117,7 @@ pub fn presets() -> [Preset; 2] {
                 swirl: 0.0,
                 seed: 58,
                 motion: 0.5,
+                motion_style: crate::MotionStyle::Loop,
             },
         },
     ]
