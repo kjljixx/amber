@@ -10,39 +10,24 @@ mod animation;
 mod color;
 mod gradient;
 mod half_blocks;
+mod presets;
 mod warp;
 
 use animation::Animation;
-use gradient::{Gradient, Point};
 use half_blocks::{HalfBlocks, Preview};
 use warp::Warp;
 
 fn main() -> io::Result<()> {
-    let gradient = Gradient::new(
-        &[
-            Point {
-                position: [0.15, 0.15],
-                color: [48, 96, 230],
-            },
-            Point {
-                position: [0.85, 0.2],
-                color: [236, 100, 170],
-            },
-            Point {
-                position: [0.5, 0.85],
-                color: [245, 165, 65],
-            },
-        ],
-        0.7,
-    )
-    .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
-    let mut cached_preview = Preview::default();
-    let warp = Warp::new(1.0, 0.45, 58)
+    let presets = presets::presets()
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+    let mut mode = 0;
+    let mut cached_preview = Preview::default();
     let mut warped = true;
     let mut playing = true;
     let mut preview_dirty = true;
     let mut redraw = true;
+    let mut sampling_ms = 0.0;
+    let mut previous_frame_ms = 0.0;
 
     ratatui::run(|terminal| {
         let mut animation = Animation::new(Instant::now());
@@ -53,37 +38,46 @@ fn main() -> io::Result<()> {
             }
 
             if redraw {
+                let frame_start = Instant::now();
                 terminal.draw(|frame| {
                     let [preview, footer] =
-                        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)])
+                        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)])
                             .areas(frame.area());
 
                     if preview_dirty || cached_preview.size() != (preview.width, preview.height) {
+                        let sampling_start = Instant::now();
                         if preview.width > 0 && preview.height > 0 {
                             let aspect =
                                 f32::from(preview.width) / (2.0 * f32::from(preview.height));
-                            let field = gradient.prepare(aspect).with_warp(if warped {
-                                warp.at_time(animation.phase())
-                            } else {
-                                Warp::default()
-                            });
+                            let preset = &presets[mode];
+                            let field = preset.gradient.prepare(aspect)
+                                .with_warp(if warped {
+                                    preset.warp.at_time(animation.phase())
+                                } else {
+                                    Warp::default()
+                                });
                             cached_preview
                                 .rebuild(preview.width, preview.height, |x, y| field.sample(x, y));
                         } else {
                             cached_preview.rebuild(preview.width, preview.height, |_, _| [0, 0, 0]);
                         }
+                        sampling_ms = sampling_start.elapsed().as_secs_f64() * 1000.0;
                         preview_dirty = false;
                     }
                     frame.render_widget(HalfBlocks(&cached_preview), preview);
                     frame.render_widget(
                         Paragraph::new(format!(
-                            "Space: {} | w: warp {} | q / Esc / Ctrl+C: quit",
+                            "Space: {} | w: {} | q: quit\nm: {} | sampling: {:.1}ms | previous frame: {:.1}ms",
                             if playing { "pause" } else { "resume" },
-                            if warped { "on" } else { "off" }
+                            if warped { "on" } else { "off" },
+                            presets[mode].name,
+                            sampling_ms,
+                            previous_frame_ms,
                         )),
                         footer,
                     );
                 })?;
+                previous_frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
                 redraw = false;
             }
 
@@ -101,6 +95,11 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(());
+                        }
+                        KeyCode::Char('m') => {
+                            mode = (mode + 1) % presets.len();
+                            preview_dirty = true;
+                            redraw = true;
                         }
                         KeyCode::Char('w') => {
                             warped = !warped;

@@ -1,8 +1,9 @@
 # Colored half-block renderer plan
 
 Status: steps 1 and 2 implemented, plus time-driven distortion and swirl,
-a comparison toggle, and pause/resume at a 20 FPS target. Prism and grain
-are planned.
+a comparison toggle, pause/resume at a 20 FPS target, and Simple/Complex
+presets. Sampling and previous-frame costs are displayed for comparison.
+Grain is planned; prism channel separation has been dropped.
 
 ## What we are building
 
@@ -157,12 +158,10 @@ Keep the same pipeline and extend `sample` in this order:
 
 1. Zoom: scale the centered sampling position.
 2. Distortion and swirl: port the seeded folds and noise warp.
-3. Prism: sample at three nearby positions, taking red, green, and blue from
-   separate samples after converting each result to linear RGB.
-4. Grain: add a fixed, restrained noise pattern after sRGB conversion.
+3. Grain: add a fixed, restrained noise pattern after sRGB conversion.
 
-These preserve the site's ordering. Grain and subtle prism effects may look
-rough at terminal resolution; add them only after judging their visible benefit.
+These preserve the site's ordering. Grain may look rough at terminal
+resolution; add it only after judging its visible benefit.
 Start every new effect at zero so the previous result remains a reference.
 
 Complete when effects can be disabled independently, a seed reproduces its
@@ -208,7 +207,7 @@ measured at representative terminal sizes.
 
 ## Performance decisions
 
-- Work scales with sample count × point count; prism adds two field evaluations.
+- Work scales with sample count × point count.
 - Reuse the RGB-pair vector; resize it only when the preview dimensions change.
 - Cache recipe color conversions and frame-wide point preparation.
 - Measure gradient calculation and terminal drawing separately. Terminal output
