@@ -4,7 +4,7 @@ use crate::{
 };
 
 /// Plain gradient settings, independent of terminal size and playback controls.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     pub points: Vec<Point>,

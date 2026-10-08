@@ -5,6 +5,8 @@
 //! into any rectangle. Draw other widgets afterward to put them on top.
 mod animation;
 mod color;
+#[cfg(feature = "generation")]
+pub mod generation;
 mod gradient;
 mod half_blocks;
 pub mod presets;
