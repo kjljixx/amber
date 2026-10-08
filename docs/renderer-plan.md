@@ -1,6 +1,6 @@
 # Colored half-block renderer plan
 
-Status: step 1 implemented; gradient calculation and animation are planned.
+Status: steps 1 and 2 implemented; effects and animation are planned.
 
 ## What we are building
 
