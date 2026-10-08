@@ -104,9 +104,9 @@ impl PreparedGradient {
         for (index, point) in self.points.iter_mut().enumerate() {
             let key = u64::from(seed) * 131 + index as u64 * 2;
             point.position[0] +=
-                amplitude * (wander_noise(time, key) - wander_noise(0.0, key)) * self.x_scale;
+                amplitude * (wander_path(time, key) - wander_path(0.0, key)) * self.x_scale;
             point.position[1] +=
-                amplitude * (wander_noise(time, key + 1) - wander_noise(0.0, key + 1));
+                amplitude * (wander_path(time, key + 1) - wander_path(0.0, key + 1));
         }
         self
     }
@@ -140,6 +140,18 @@ impl PreparedGradient {
 
         oklab_to_rgb(lab.map(|channel| channel / total_weight))
     }
+}
+
+// Independent phases and rates prevent all coordinates from stopping at the
+// same noise-cell boundaries. Layering paths keeps motion alive when one slows.
+// Positive weights sum to one, preserving the existing displacement bounds.
+fn wander_path(time: f64, seed: u64) -> f32 {
+    let phase = (seed.wrapping_mul(73) % 997) as f64 / 997.0 * 11.0;
+    let rate = 0.85 + (seed.wrapping_mul(37) % 101) as f64 / 101.0 * 0.3;
+    let time = time * rate;
+    0.6 * wander_noise(time + phase, seed)
+        + 0.28 * wander_noise(time * 1.73 + phase * 2.31 + 0.37, seed.wrapping_add(1009))
+        + 0.12 * wander_noise(time * 2.91 + phase * 0.71 + 0.83, seed.wrapping_add(2017))
 }
 
 // Smooth one-dimensional value noise. Integer hashing avoids the precision
@@ -177,6 +189,24 @@ mod tests {
             softness,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn wandering_coordinates_do_not_share_stops_at_integer_times() {
+        for time in [0.0, 1.0, 2.0, 3.0, 4.0, 10.0] {
+            let moving = (0..36)
+                .filter(|index| {
+                    let seed = 58 * 131 + index;
+                    let velocity =
+                        (wander_path(time + 0.001, seed) - wander_path(time, seed)).abs();
+                    velocity > 0.00001
+                })
+                .count();
+            assert!(
+                moving > 24,
+                "shared motion pause at {time}: {moving} moving coordinates"
+            );
+        }
     }
 
     #[test]
