@@ -1,15 +1,31 @@
 use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::widgets::Paragraph;
+use ratatui::{
+    layout::{Constraint, Layout},
+    style::Color,
+    widgets::Paragraph,
+};
+
+mod half_blocks;
+
+use half_blocks::HalfBlocks;
 
 fn main() -> io::Result<()> {
     ratatui::run(|terminal| {
         loop {
             terminal.draw(|frame| {
+                let [preview, footer] =
+                    Layout::vertical([Constraint::Fill(1), Constraint::Length(1)])
+                        .areas(frame.area());
+
                 frame.render_widget(
-                    Paragraph::new("Hello, Amber!\n\nPress q, Esc, or Ctrl+C to quit."),
-                    frame.area(),
+                    HalfBlocks::new(Color::Rgb(45, 180, 210), Color::Rgb(245, 165, 65)),
+                    preview,
+                );
+                frame.render_widget(
+                    Paragraph::new("q / Esc / Ctrl+C: quit | top: cyan | bottom: amber"),
+                    footer,
                 );
             })?;
 
