@@ -1,16 +1,6 @@
 //! Run with `cargo run --offline --example render_bench`.
 //! Measures gradient sampling only; terminal output is excluded.
-#[path = "../src/color.rs"]
-mod color;
-#[path = "../src/gradient.rs"]
-mod gradient;
-#[path = "../src/presets.rs"]
-mod presets;
-#[path = "../src/recipe.rs"]
-#[allow(dead_code)]
-mod recipe;
-#[path = "../src/warp.rs"]
-mod warp;
+use amber::presets;
 
 fn main() {
     let width = 160;

@@ -3,7 +3,7 @@ use crate::warp::Warp;
 
 const MAX_POINTS: usize = 24;
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
     pub position: [f32; 2],

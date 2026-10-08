@@ -10,6 +10,8 @@ pub struct Animation {
     running: bool,
     last_frame: Instant,
     next_frame: Instant,
+    interval: Duration,
+    speed: f64,
 }
 
 impl Animation {
@@ -19,6 +21,8 @@ impl Animation {
             running: true,
             last_frame: now,
             next_frame: now + FRAME_INTERVAL,
+            interval: FRAME_INTERVAL,
+            speed: PHASE_PER_SECOND,
         }
     }
 
@@ -26,12 +30,31 @@ impl Animation {
         self.phase as f32
     }
 
+    pub fn set_timing(
+        &mut self,
+        interval: Duration,
+        speed: f64,
+        now: Instant,
+    ) -> Result<(), &'static str> {
+        if interval.is_zero() || now.checked_add(interval).is_none() {
+            return Err("frame interval must be positive and fit the clock");
+        }
+        if !speed.is_finite() || speed < 0.0 {
+            return Err("animation speed must be finite and nonnegative");
+        }
+        self.interval = interval;
+        self.speed = speed;
+        self.last_frame = now;
+        self.next_frame = now + interval;
+        Ok(())
+    }
+
     pub fn set_running(&mut self, running: bool, now: Instant) {
         if running != self.running {
             self.running = running;
             // Freeze the displayed phase; resuming excludes time spent paused.
             self.last_frame = now;
-            self.next_frame = now + FRAME_INTERVAL;
+            self.next_frame = now + self.interval;
         }
     }
 
@@ -40,9 +63,15 @@ impl Animation {
             return false;
         }
         let elapsed = now.duration_since(self.last_frame).as_secs_f64();
-        self.phase = (self.phase + elapsed * PHASE_PER_SECOND) % std::f64::consts::TAU;
+        // Reduce elapsed time first so large finite speeds cannot overflow.
+        let advance = if self.speed > 0.0 {
+            (elapsed % (std::f64::consts::TAU / self.speed)) * self.speed
+        } else {
+            0.0
+        };
+        self.phase = (self.phase + advance) % std::f64::consts::TAU;
         self.last_frame = now;
-        self.next_frame = now + FRAME_INTERVAL;
+        self.next_frame = now + self.interval;
         true
     }
 

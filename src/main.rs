@@ -6,17 +6,9 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-mod animation;
 mod cli;
-mod color;
-mod gradient;
-mod half_blocks;
-mod presets;
-mod recipe;
-mod warp;
 
-use animation::Animation;
-use half_blocks::{HalfBlocks, Preview};
+use amber::{GradientView, Recipe, presets};
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -44,31 +36,18 @@ fn run() -> io::Result<()> {
     if let Some(path) = recipe {
         presets.push(presets::Preset {
             name: "Loaded",
-            recipe: recipe::Recipe::load(&path)?,
+            recipe: Recipe::load(&path)?,
         });
         mode = presets.len() - 1;
     }
-    let compiled = presets
-        .iter()
-        .map(|preset| preset.recipe.compile())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
-    let mut cached_preview = Preview::default();
-    let mut warped = true;
-    let mut playing = true;
-    let mut drifting = true;
-    let mut preview_dirty = true;
+    let mut view =
+        GradientView::new(&presets[mode].recipe, Instant::now()).map_err(io::Error::other)?;
     let mut redraw = true;
-    let mut sampling_ms = 0.0;
     let mut previous_frame_ms = 0.0;
 
     ratatui::run(|terminal| {
-        let mut animation = Animation::new(Instant::now());
         loop {
-            if animation.tick(Instant::now()) {
-                preview_dirty = true;
-                redraw = true;
-            }
+            redraw |= view.update(Instant::now());
 
             if redraw {
                 let frame_start = Instant::now();
@@ -77,29 +56,16 @@ fn run() -> io::Result<()> {
                         Layout::vertical([Constraint::Fill(1), Constraint::Length(2)])
                             .areas(frame.area());
 
-                    if preview_dirty || cached_preview.size() != (preview.width, preview.height) {
-                        let sampling_start = Instant::now();
-                        if preview.width > 0 && preview.height > 0 {
-                            let aspect =
-                                f32::from(preview.width) / (2.0 * f32::from(preview.height));
-                            let field = compiled[mode].prepare(aspect, animation.phase(), warped, drifting);
-                            cached_preview
-                                .rebuild(preview.width, preview.height, |x, y| field.sample(x, y));
-                        } else {
-                            cached_preview.rebuild(preview.width, preview.height, |_, _| [0, 0, 0]);
-                        }
-                        sampling_ms = sampling_start.elapsed().as_secs_f64() * 1000.0;
-                        preview_dirty = false;
-                    }
-                    frame.render_widget(HalfBlocks(&cached_preview), preview);
+                    view.render(frame, preview);
+                    let playback = view.playback();
                     frame.render_widget(
                         Paragraph::new(format!(
                             "Space: {} | w: {} | d: {} | q: quit\nm: {} | sampling: {:.1}ms | previous frame: {:.1}ms",
-                            if playing { "pause" } else { "resume" },
-                            if warped { "on" } else { "off" },
-                            if drifting { "on" } else { "off" },
+                            if playback.playing { "pause" } else { "resume" },
+                            if playback.warped { "on" } else { "off" },
+                            if playback.drifting { "on" } else { "off" },
                             presets[mode].name,
-                            sampling_ms,
+                            view.stats().sampling.as_secs_f64() * 1000.0,
                             previous_frame_ms,
                         )),
                         footer,
@@ -111,7 +77,7 @@ fn run() -> io::Result<()> {
 
             // Animated: wait until input or the next frame deadline.
             // Paused/all motion off: block on input without periodic wakeups.
-            if let Some(timeout) = animation.wait_duration(Instant::now()) {
+            if let Some(timeout) = view.wait_duration(Instant::now()) {
                 if !event::poll(timeout)? {
                     continue;
                 }
@@ -119,6 +85,7 @@ fn run() -> io::Result<()> {
 
             match event::read()? {
                 Event::Key(key) if key.is_press() => {
+                    let mut playback = view.playback();
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -126,26 +93,25 @@ fn run() -> io::Result<()> {
                         }
                         KeyCode::Char('m') => {
                             mode = (mode + 1) % presets.len();
-                            preview_dirty = true;
+                            view.set_recipe(&presets[mode].recipe)
+                                .map_err(io::Error::other)?;
                             redraw = true;
                         }
                         KeyCode::Char('d') => {
-                            drifting = !drifting;
-                            preview_dirty = true;
+                            playback.drifting = !playback.drifting;
                             redraw = true;
                         }
                         KeyCode::Char('w') => {
-                            warped = !warped;
-                            preview_dirty = true;
+                            playback.warped = !playback.warped;
                             redraw = true;
                         }
                         KeyCode::Char(' ') => {
-                            playing = !playing;
+                            playback.playing = !playback.playing;
                             redraw = true;
                         }
                         _ => {}
                     }
-                    animation.set_running(playing && (warped || drifting), Instant::now());
+                    view.set_playback(playback, Instant::now());
                 }
                 Event::Resize(_, _) => redraw = true,
                 _ => {}
