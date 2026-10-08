@@ -24,6 +24,7 @@ fn main() -> io::Result<()> {
     let mut cached_preview = Preview::default();
     let mut warped = true;
     let mut playing = true;
+    let mut drifting = true;
     let mut preview_dirty = true;
     let mut redraw = true;
     let mut sampling_ms = 0.0;
@@ -51,6 +52,7 @@ fn main() -> io::Result<()> {
                                 f32::from(preview.width) / (2.0 * f32::from(preview.height));
                             let preset = &presets[mode];
                             let field = preset.gradient.prepare(aspect)
+                                .with_drift(animation.phase(), if drifting { 0.5 } else { 0.0 })
                                 .with_warp(if warped {
                                     preset.warp.at_time(animation.phase())
                                 } else {
@@ -67,9 +69,10 @@ fn main() -> io::Result<()> {
                     frame.render_widget(HalfBlocks(&cached_preview), preview);
                     frame.render_widget(
                         Paragraph::new(format!(
-                            "Space: {} | w: {} | q: quit\nm: {} | sampling: {:.1}ms | previous frame: {:.1}ms",
+                            "Space: {} | w: {} | d: {} | q: quit\nm: {} | sampling: {:.1}ms | previous frame: {:.1}ms",
                             if playing { "pause" } else { "resume" },
                             if warped { "on" } else { "off" },
+                            if drifting { "on" } else { "off" },
                             presets[mode].name,
                             sampling_ms,
                             previous_frame_ms,
@@ -82,7 +85,7 @@ fn main() -> io::Result<()> {
             }
 
             // Animated: wait until input or the next frame deadline.
-            // Paused/warp off: block on input without periodic wakeups.
+            // Paused/all motion off: block on input without periodic wakeups.
             if let Some(timeout) = animation.wait_duration(Instant::now()) {
                 if !event::poll(timeout)? {
                     continue;
@@ -101,6 +104,11 @@ fn main() -> io::Result<()> {
                             preview_dirty = true;
                             redraw = true;
                         }
+                        KeyCode::Char('d') => {
+                            drifting = !drifting;
+                            preview_dirty = true;
+                            redraw = true;
+                        }
                         KeyCode::Char('w') => {
                             warped = !warped;
                             preview_dirty = true;
@@ -112,7 +120,7 @@ fn main() -> io::Result<()> {
                         }
                         _ => {}
                     }
-                    animation.set_running(playing && warped, Instant::now());
+                    animation.set_running(playing && (warped || drifting), Instant::now());
                 }
                 Event::Resize(_, _) => redraw = true,
                 _ => {}

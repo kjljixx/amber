@@ -1,9 +1,11 @@
 # Colored half-block renderer plan
 
-Status: steps 1 and 2 implemented, plus time-driven distortion and swirl,
+Status: steps 1 and 2 implemented, plus time-driven distortion, swirl, and color-point drift,
 a comparison toggle, pause/resume at a 20 FPS target, and Simple/Complex
 presets. Sampling and previous-frame costs are displayed for comparison.
-Grain is planned; prism channel separation has been dropped.
+Point drift follows the site's per-point sine/cosine paths at motion 0.5; `d`
+toggles it independently of `w` (warp). Pause freezes both. Grain is planned;
+prism channel separation has been dropped.
 
 ## What we are building
 

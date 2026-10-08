@@ -76,6 +76,22 @@ impl Gradient {
 }
 
 impl PreparedGradient {
+    /// Apply Mesh's looping point motion once per frame, before pixel sampling.
+    pub fn with_drift(mut self, phase: f32, motion: f32) -> Self {
+        assert!(phase.is_finite());
+        assert!(motion.is_finite() && (0.0..=1.5).contains(&motion));
+        if motion == 0.0 {
+            return self;
+        }
+        let amplitude = motion * 0.06;
+        for (index, point) in self.points.iter_mut().enumerate() {
+            let index = index as f32;
+            point.position[0] += amplitude * (phase + index * 1.7).sin() * self.x_scale;
+            point.position[1] += amplitude * (phase + index * 2.3).cos();
+        }
+        self
+    }
+
     pub fn with_warp(mut self, warp: Warp) -> Self {
         self.warp = warp;
         self
@@ -126,6 +142,53 @@ mod tests {
             softness,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn drift_uses_point_phases_and_aspect_corrected_amplitude() {
+        let field = pair(0.5).prepare(4.0).with_drift(0.7, 0.5);
+        let base = pair(0.5).prepare(4.0);
+        for (index, (moving, fixed)) in field.points.iter().zip(&base.points).enumerate() {
+            let index = index as f32;
+            assert!(
+                (moving.position[0] - fixed.position[0] - 0.06 * (0.7 + index * 1.7).sin()).abs()
+                    < 0.000001
+            );
+            assert!(
+                (moving.position[1] - fixed.position[1] - 0.03 * (0.7 + index * 2.3).cos()).abs()
+                    < 0.000001
+            );
+            assert_eq!(moving.color, fixed.color);
+        }
+    }
+
+    #[test]
+    fn drift_moves_the_field_and_loops_without_a_jump() {
+        let gradient = pair(0.5);
+        let start = gradient.prepare(1.0).with_drift(0.7, 0.5);
+        let later = gradient.prepare(1.0).with_drift(2.0, 0.5);
+        assert_ne!(start.sample(0.5, 0.5), later.sample(0.5, 0.5));
+        let looped = gradient
+            .prepare(1.0)
+            .with_drift(0.7 + std::f32::consts::TAU, 0.5);
+        for (a, b) in start.points.iter().zip(&looped.points) {
+            for axis in 0..2 {
+                assert!((a.position[axis] - b.position[axis]).abs() < 0.000001);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_drift_preserves_static_samples() {
+        let gradient = pair(0.5);
+        let base = gradient.prepare(1.0);
+        let disabled = gradient.prepare(1.0).with_drift(1.2, 0.0);
+        for y in 0..10 {
+            for x in 0..10 {
+                let (x, y) = (x as f32 / 9.0, y as f32 / 9.0);
+                assert_eq!(base.sample(x, y), disabled.sample(x, y));
+            }
+        }
     }
 
     #[test]
