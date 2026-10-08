@@ -1,9 +1,12 @@
-/// Static domain warping: change the sampling position, not the color points.
+/// Domain warping: change the sampling position, not the color points.
 #[derive(Clone, Copy, Default)]
 pub struct Warp {
     distortion: f32,
     swirl: f32,
     seed_offset: [f32; 2],
+    time: f32,
+    noise_offset: [f32; 2],
+    swirl_pulse: f32,
 }
 
 impl Warp {
@@ -22,13 +25,25 @@ impl Warp {
             distortion,
             swirl,
             seed_offset: [fract(seed * 0.1371) * 40.0, fract(seed * 0.2113) * 40.0],
+            time: 0.0,
+            noise_offset: [0.0, 0.0],
+            swirl_pulse: 1.0,
         })
+    }
+
+    pub fn at_time(mut self, time: f32) -> Self {
+        let (sin, cos) = time.sin_cos();
+        self.time = time;
+        // Anchor the orbit at zero so the first frame matches the static warp.
+        self.noise_offset = [(cos - 1.0) * 0.12, sin * 0.12];
+        self.swirl_pulse = 1.0 + 0.2 * sin;
+        self
     }
 
     pub fn apply(&self, [mut x, mut y]: [f32; 2]) -> [f32; 2] {
         if self.swirl != 0.0 {
             // Strongest at the center, tapering toward the edges.
-            let angle = self.swirl * 3.2 * (-1.4 * (x * x + y * y)).exp();
+            let angle = self.swirl * 3.2 * (-1.4 * (x * x + y * y)).exp() * self.swirl_pulse;
             let (sin, cos) = angle.sin_cos();
             (x, y) = (cos * x + sin * y, -sin * x + cos * y);
         }
@@ -38,12 +53,14 @@ impl Warp {
         }
 
         let [sx, sy] = self.seed_offset;
+        let t = self.time;
+        let [ox, oy] = self.noise_offset;
         // Broad folds, followed by two layers of organic noise displacement.
-        y += self.distortion * (0.13 * (x * 2.3 + sx).sin() + 0.05 * (x * 4.7 + sy).sin());
-        x += self.distortion * 0.06 * (y * 2.9 + sy).sin();
+        y += self.distortion * (0.13 * (x * 2.3 + sx + t).sin() + 0.05 * (x * 4.7 + sy - t).sin());
+        x += self.distortion * 0.06 * (y * 2.9 + sy + t).sin();
 
-        let nx = fbm([x * 1.3 + sx, y * 1.3 + sy]) - 0.45;
-        let ny = fbm([x * 1.3 + sy + 7.3, y * 1.3 + sx + 7.3]) - 0.45;
+        let nx = fbm([x * 1.3 + sx + ox, y * 1.3 + sy + oy]) - 0.45;
+        let ny = fbm([x * 1.3 + sy + 7.3 - ox, y * 1.3 + sx + 7.3 - oy]) - 0.45;
         let mx = fbm([x * 2.4 + nx * 1.5 + sy + 3.1, y * 2.4 + ny * 1.5 + sx + 3.1]) - 0.45;
         let my = fbm([x * 2.4 + nx * 1.5 + sx + 9.7, y * 2.4 + ny * 1.5 + sy + 9.7]) - 0.45;
 
@@ -153,5 +170,35 @@ mod tests {
             assert!(Warp::new(0.0, swirl, 58).is_err());
         }
         assert!(Warp::new(0.0, 0.0, 1000).is_err());
+    }
+
+    #[test]
+    fn animation_starts_at_the_static_warp_and_moves_continuously() {
+        let warp = Warp::new(1.0, 0.45, 58).unwrap();
+        let position = [-0.2, 0.1];
+        let start = warp.apply(position);
+        assert_eq!(start, warp.at_time(0.0).apply(position));
+        let next = warp.at_time(0.001).apply(position);
+        assert!(
+            start
+                .into_iter()
+                .zip(next)
+                .all(|(a, b)| (a - b).abs() < 0.002)
+        );
+        assert_ne!(start, warp.at_time(1.0).apply(position));
+    }
+
+    #[test]
+    fn wrapping_time_keeps_the_warp_continuous() {
+        let warp = Warp::new(1.0, 0.45, 58).unwrap();
+        let position = [0.3, -0.1];
+        let start = warp.at_time(0.0).apply(position);
+        let end = warp.at_time(std::f32::consts::TAU).apply(position);
+        assert!(
+            start
+                .into_iter()
+                .zip(end)
+                .all(|(a, b)| (a - b).abs() < 0.0001)
+        );
     }
 }

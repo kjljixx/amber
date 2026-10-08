@@ -1,7 +1,8 @@
 # Colored half-block renderer plan
 
-Status: steps 1 and 2 implemented, plus static distortion and swirl with a
-comparison toggle. Prism, grain, and animation are planned.
+Status: steps 1 and 2 implemented, plus time-driven distortion and swirl,
+a comparison toggle, and pause/resume at a 20 FPS target. Prism and grain
+are planned.
 
 ## What we are building
 

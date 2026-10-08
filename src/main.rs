@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, time::Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
@@ -6,11 +6,13 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+mod animation;
 mod color;
 mod gradient;
 mod half_blocks;
 mod warp;
 
+use animation::Animation;
 use gradient::{Gradient, Point};
 use half_blocks::{HalfBlocks, Preview};
 use warp::Warp;
@@ -38,52 +40,83 @@ fn main() -> io::Result<()> {
     let warp = Warp::new(1.0, 0.45, 58)
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
     let mut warped = true;
+    let mut playing = true;
     let mut preview_dirty = true;
+    let mut redraw = true;
 
     ratatui::run(|terminal| {
+        let mut animation = Animation::new(Instant::now());
         loop {
-            terminal.draw(|frame| {
-                let [preview, footer] =
-                    Layout::vertical([Constraint::Fill(1), Constraint::Length(1)])
-                        .areas(frame.area());
+            if animation.tick(Instant::now()) {
+                preview_dirty = true;
+                redraw = true;
+            }
 
-                if preview_dirty || cached_preview.size() != (preview.width, preview.height) {
-                    if preview.width > 0 && preview.height > 0 {
-                        let aspect = f32::from(preview.width) / (2.0 * f32::from(preview.height));
-                        let field = gradient.prepare(aspect).with_warp(if warped {
-                            warp
+            if redraw {
+                terminal.draw(|frame| {
+                    let [preview, footer] =
+                        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)])
+                            .areas(frame.area());
+
+                    if preview_dirty || cached_preview.size() != (preview.width, preview.height) {
+                        if preview.width > 0 && preview.height > 0 {
+                            let aspect =
+                                f32::from(preview.width) / (2.0 * f32::from(preview.height));
+                            let field = gradient.prepare(aspect).with_warp(if warped {
+                                warp.at_time(animation.phase())
+                            } else {
+                                Warp::default()
+                            });
+                            cached_preview
+                                .rebuild(preview.width, preview.height, |x, y| field.sample(x, y));
                         } else {
-                            Warp::default()
-                        });
-                        cached_preview
-                            .rebuild(preview.width, preview.height, |x, y| field.sample(x, y));
-                    } else {
-                        cached_preview.rebuild(preview.width, preview.height, |_, _| [0, 0, 0]);
+                            cached_preview.rebuild(preview.width, preview.height, |_, _| [0, 0, 0]);
+                        }
+                        preview_dirty = false;
                     }
-                    preview_dirty = false;
-                }
-                frame.render_widget(HalfBlocks(&cached_preview), preview);
-                frame.render_widget(
-                    Paragraph::new(format!(
-                        "w: warp {} | q / Esc / Ctrl+C: quit | seed: 58",
-                        if warped { "on" } else { "off" }
-                    )),
-                    footer,
-                );
-            })?;
+                    frame.render_widget(HalfBlocks(&cached_preview), preview);
+                    frame.render_widget(
+                        Paragraph::new(format!(
+                            "Space: {} | w: warp {} | q / Esc / Ctrl+C: quit",
+                            if playing { "pause" } else { "resume" },
+                            if warped { "on" } else { "off" }
+                        )),
+                        footer,
+                    );
+                })?;
+                redraw = false;
+            }
 
-            if let Event::Key(key) = event::read()? {
-                if key.is_press()
-                    && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)))
-                {
-                    return Ok(());
+            // Animated: wait until input or the next frame deadline.
+            // Paused/warp off: block on input without periodic wakeups.
+            if let Some(timeout) = animation.wait_duration(Instant::now()) {
+                if !event::poll(timeout)? {
+                    continue;
                 }
-                if key.is_press() && key.code == KeyCode::Char('w') {
-                    warped = !warped;
-                    preview_dirty = true;
+            }
+
+            match event::read()? {
+                Event::Key(key) if key.is_press() => {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(());
+                        }
+                        KeyCode::Char('w') => {
+                            warped = !warped;
+                            preview_dirty = true;
+                            redraw = true;
+                        }
+                        KeyCode::Char(' ') => {
+                            playing = !playing;
+                            redraw = true;
+                        }
+                        _ => {}
+                    }
+                    animation.set_running(playing && warped, Instant::now());
                 }
+                Event::Resize(_, _) => redraw = true,
+                _ => {}
             }
         }
     })
