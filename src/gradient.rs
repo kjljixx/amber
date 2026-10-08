@@ -1,4 +1,5 @@
 use crate::color::{Oklab, Rgb, oklab_to_rgb, rgb_to_oklab};
+use crate::warp::Warp;
 
 const MAX_POINTS: usize = 24;
 
@@ -22,6 +23,7 @@ pub struct PreparedGradient {
     points: Vec<LabPoint>,
     x_scale: f32,
     radius_squared: f32,
+    warp: Warp,
 }
 
 impl Gradient {
@@ -68,13 +70,19 @@ impl Gradient {
                 .collect(),
             x_scale,
             radius_squared: self.radius_squared,
+            warp: Warp::default(),
         }
     }
 }
 
 impl PreparedGradient {
+    pub fn with_warp(mut self, warp: Warp) -> Self {
+        self.warp = warp;
+        self
+    }
+
     pub fn sample(&self, x: f32, y: f32) -> Rgb {
-        let position = [(x - 0.5) * self.x_scale, y - 0.5];
+        let position = self.warp.apply([(x - 0.5) * self.x_scale, y - 0.5]);
         let mut distances = [0.0; MAX_POINTS];
         let mut nearest = f32::INFINITY;
 
@@ -190,5 +198,29 @@ mod tests {
             },
         ];
         assert!(Gradient::new(&invalid, 0.5).is_err());
+    }
+
+    #[test]
+    fn warp_changes_the_field_and_can_be_disabled() {
+        let gradient = pair(0.5);
+        let plain = gradient.prepare(1.0);
+        let disabled = gradient
+            .prepare(1.0)
+            .with_warp(Warp::new(0.0, 0.0, 58).unwrap());
+        let warped = gradient
+            .prepare(1.0)
+            .with_warp(Warp::new(1.0, 0.45, 58).unwrap());
+        let mut changed = 0;
+        for row in 0..10 {
+            for column in 0..10 {
+                let x = (column as f32 + 0.5) / 10.0;
+                let y = (row as f32 + 0.5) / 10.0;
+                assert_eq!(plain.sample(x, y), disabled.sample(x, y));
+                if plain.sample(x, y) != warped.sample(x, y) {
+                    changed += 1;
+                }
+            }
+        }
+        assert!(changed > 10);
     }
 }
