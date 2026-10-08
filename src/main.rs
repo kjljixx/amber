@@ -7,20 +7,52 @@ use ratatui::{
 };
 
 mod animation;
+mod cli;
 mod color;
 mod gradient;
 mod half_blocks;
 mod presets;
+mod recipe;
 mod warp;
 
 use animation::Animation;
 use half_blocks::{HalfBlocks, Preview};
-use warp::Warp;
 
-fn main() -> io::Result<()> {
-    let presets = presets::presets()
-        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("amber: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> io::Result<()> {
+    let command = cli::parse(std::env::args_os().skip(1)).map_err(|message| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{message}\n{}", cli::USAGE),
+        )
+    })?;
+    let cli::Command::Run { recipe } = command else {
+        println!("{}", cli::USAGE);
+        return Ok(());
+    };
+    let mut presets = Vec::from(presets::presets());
     let mut mode = 0;
+    if let Some(path) = recipe {
+        presets.push(presets::Preset {
+            name: "Loaded",
+            recipe: recipe::Recipe::load(&path)?,
+        });
+        mode = presets.len() - 1;
+    }
+    let compiled = presets
+        .iter()
+        .map(|preset| preset.recipe.compile())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
     let mut cached_preview = Preview::default();
     let mut warped = true;
     let mut playing = true;
@@ -50,14 +82,7 @@ fn main() -> io::Result<()> {
                         if preview.width > 0 && preview.height > 0 {
                             let aspect =
                                 f32::from(preview.width) / (2.0 * f32::from(preview.height));
-                            let preset = &presets[mode];
-                            let field = preset.gradient.prepare(aspect)
-                                .with_drift(animation.phase(), if drifting { 0.5 } else { 0.0 })
-                                .with_warp(if warped {
-                                    preset.warp.at_time(animation.phase())
-                                } else {
-                                    Warp::default()
-                                });
+                            let field = compiled[mode].prepare(aspect, animation.phase(), warped, drifting);
                             cached_preview
                                 .rebuild(preview.width, preview.height, |x, y| field.sample(x, y));
                         } else {

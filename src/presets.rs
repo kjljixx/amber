@@ -1,15 +1,11 @@
-use crate::{
-    gradient::{Gradient, Point},
-    warp::Warp,
-};
+use crate::{gradient::Point, recipe::Recipe};
 
 pub struct Preset {
     pub name: &'static str,
-    pub gradient: Gradient,
-    pub warp: Warp,
+    pub recipe: Recipe,
 }
 
-pub fn presets() -> Result<[Preset; 2], &'static str> {
+pub fn presets() -> [Preset; 2] {
     let simple = [
         Point {
             position: [0.15, 0.15],
@@ -99,16 +95,28 @@ pub fn presets() -> Result<[Preset; 2], &'static str> {
             color: [255, 96, 180],
         },
     ];
-    Ok([
+    [
         Preset {
             name: "Simple",
-            gradient: Gradient::new(&simple, 0.7)?,
-            warp: Warp::new(1.0, 0.45, 58)?,
+            recipe: Recipe {
+                points: simple.into(),
+                softness: 0.7,
+                distortion: 1.0,
+                swirl: 0.45,
+                seed: 58,
+                motion: 0.5,
+            },
         },
         Preset {
             name: "Complex",
-            gradient: Gradient::new(&complex, 0.44)?,
-            warp: Warp::new(1.0, 0.0, 58)?,
+            recipe: Recipe {
+                points: complex.into(),
+                softness: 0.44,
+                distortion: 1.0,
+                swirl: 0.0,
+                seed: 58,
+                motion: 0.5,
+            },
         },
-    ])
+    ]
 }
