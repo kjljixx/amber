@@ -3,6 +3,7 @@
 //! The host application owns terminal setup, input, layout, and its event loop.
 //! Call [`GradientView::update`] with the current time, then render the view
 //! into any rectangle. Draw other widgets afterward to put them on top.
+pub mod ambient;
 mod animation;
 mod color;
 mod digits;

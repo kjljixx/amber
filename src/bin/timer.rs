@@ -12,6 +12,13 @@
 //! Once Jev has made a gradient, the description stays centered above the clock
 //! until a new one replaces it.
 //!
+//! The first gradient is made for the moment: the weekday, time of day, month
+//! and weather, such as "Friday golden hour in October (autumn), light rain,
+//! cool". The weather is for wherever the machine's IP address seems to be;
+//! `--location Lisbon` names a place instead, and `--no-weather` skips the
+//! lookup and describes the time alone. Only that description goes to Jev, never
+//! the place.
+//!
 //! When a phase ends, a chime plays and a desktop notification appears: a
 //! climbing one when a work period ends, a falling one when a break does.
 //! `cargo run --offline --bin timer -- --alarm-test` plays both now, to check
@@ -25,7 +32,9 @@ use std::{
 };
 
 use amber::{
-    Digits, GradientView, blend_samples,
+    Digits, GradientView,
+    ambient::{Ambient, Place},
+    blend_samples,
     generation::{GeneratedGradient, Generator},
     presets,
 };
@@ -276,6 +285,9 @@ struct Prompt {
     shown: Option<String>,
     /// The description of a request that has not finished.
     in_flight: Option<String>,
+    /// Whether that request was made at startup, not typed. The box may be
+    /// open meanwhile with something half typed, which its arrival leaves alone.
+    automatic: bool,
 }
 
 impl Prompt {
@@ -313,6 +325,13 @@ impl Prompt {
     /// A request has started for the text in the box.
     fn started(&mut self) {
         self.in_flight = Some(self.text.trim().to_owned());
+        self.automatic = false;
+    }
+
+    /// A request has started for `description`, made without being typed.
+    fn started_automatically(&mut self, description: String) {
+        self.in_flight = Some(description);
+        self.automatic = true;
     }
 
     /// The gradient for the request in flight has arrived: its description is
@@ -321,13 +340,16 @@ impl Prompt {
         if let Some(description) = self.in_flight.take() {
             self.shown = Some(description);
         }
-        self.open = false;
-        self.text.clear();
+        if !std::mem::take(&mut self.automatic) {
+            self.open = false;
+            self.text.clear();
+        }
     }
 
     /// The request failed. The old gradient and description stay.
     fn failed(&mut self) {
         self.in_flight = None;
+        self.automatic = false;
     }
 
     /// The end of the text being edited that fits in `columns` terminal
@@ -525,22 +547,51 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run() -> io::Result<()> {
-    match std::env::args().nth(1).as_deref() {
-        None => {}
-        Some("--alarm-test") => return alarm_test(),
-        Some(other) => {
-            return Err(io::Error::other(format!(
-                "unknown argument '{other}'; the only option is --alarm-test"
-            )));
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+enum Command {
+    AlarmTest,
+    /// Run the clock, starting from a description of this moment and `place`'s
+    /// weather; with no place, of the time alone.
+    Clock(Option<Place>),
+}
+
+const USAGE: &str = "options: --location <city> | --no-weather | --alarm-test";
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let mut place = Some(Place::Here);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--alarm-test" => return Ok(Command::AlarmTest),
+            "--no-weather" => place = None,
+            "--location" => {
+                let name = args.next().filter(|name| !name.trim().is_empty());
+                place = Some(Place::Named(
+                    name.ok_or("--location needs a place, such as --location Lisbon")?,
+                ));
+            }
+            other => match other.strip_prefix("--location=") {
+                Some(name) if !name.trim().is_empty() => place = Some(Place::Named(name.into())),
+                _ => return Err(format!("unknown argument '{other}'; {USAGE}")),
+            },
         }
     }
+    Ok(Command::Clock(place))
+}
+
+fn run() -> io::Result<()> {
+    let place = match parse_args(std::env::args().skip(1)).map_err(io::Error::other)? {
+        Command::AlarmTest => return alarm_test(),
+        Command::Clock(place) => place,
+    };
     let start = Instant::now();
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
     let mut speed = SpeedControl::new(BASE_SPEED);
     speed.change(DEFAULT_SPEED_STEPS, &mut background)?;
     let mut generator = Generator::new();
+    let mut ambient = Ambient::start(place);
     let mut prompt = Prompt::default();
     let mut clock = Clock::new(start);
     let mut shown = label(clock.phase().length());
@@ -551,6 +602,20 @@ fn run() -> io::Result<()> {
             let now = Instant::now();
             if clock.advance(now) {
                 announce(clock.phase());
+            }
+            if let Some(description) = ambient.poll() {
+                // Start from a gradient for the moment, unless a description has
+                // already been asked for in the meantime.
+                if prompt.shown.is_none() && prompt.in_flight.is_none() {
+                    prompt.started_automatically(description.clone());
+                    if let Some(cached) = generator.submit(&description) {
+                        apply(&mut background, &mut speed, &cached)?;
+                        prompt.succeeded();
+                    } else if !generator.is_pending() {
+                        prompt.failed();
+                    }
+                    redraw = true;
+                }
             }
             if let Some(result) = generator.poll() {
                 match result {
@@ -592,7 +657,8 @@ fn run() -> io::Result<()> {
                 background.wait_duration(Instant::now()),
                 clock.until_label_changes(Instant::now()),
                 // A pending request has to be polled even while paused.
-                generator.is_pending().then_some(Duration::from_millis(25)),
+                (generator.is_pending() || ambient.is_pending())
+                    .then_some(Duration::from_millis(25)),
             ]
             .into_iter()
             .flatten()
@@ -1185,6 +1251,53 @@ mod tests {
         prompt.succeeded();
         assert_eq!(prompt.shown.as_deref(), Some("something else"));
         assert_eq!(prompt.text, "");
+    }
+
+    #[test]
+    fn a_startup_description_does_not_disturb_a_box_being_typed_in() {
+        let mut prompt = Prompt::default();
+        prompt.started_automatically("Friday morning in May".into());
+        prompt.begin();
+        prompt.paste("half a thought");
+        prompt.succeeded();
+        assert_eq!(prompt.shown.as_deref(), Some("Friday morning in May"));
+        assert!(prompt.open);
+        assert_eq!(prompt.text, "half a thought");
+
+        // A failed one shows nothing and leaves the box alone too; the next
+        // typed request behaves as usual.
+        let mut prompt = Prompt::default();
+        prompt.started_automatically("Friday morning in May".into());
+        prompt.failed();
+        assert_eq!(prompt.shown, None);
+        assert!(!prompt.has_line());
+        prompt.begin();
+        prompt.paste("a misty forest");
+        prompt.started();
+        prompt.succeeded();
+        assert!(!prompt.open);
+        assert_eq!(prompt.text, "");
+        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+    }
+
+    #[test]
+    fn the_command_line_picks_the_place_to_describe() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        assert_eq!(parse(&[]), Ok(Command::Clock(Some(Place::Here))));
+        assert_eq!(parse(&["--no-weather"]), Ok(Command::Clock(None)));
+        assert_eq!(parse(&["--alarm-test"]), Ok(Command::AlarmTest));
+        let lisbon = Ok(Command::Clock(Some(Place::Named("Lisbon".into()))));
+        assert_eq!(parse(&["--location", "Lisbon"]), lisbon);
+        assert_eq!(parse(&["--location=Lisbon"]), lisbon);
+        // The last choice wins.
+        assert_eq!(
+            parse(&["--location", "Lisbon", "--no-weather"]),
+            Ok(Command::Clock(None))
+        );
+        assert!(parse(&["--location"]).is_err());
+        assert!(parse(&["--location", " "]).is_err());
+        assert!(parse(&["--location="]).is_err());
+        assert!(parse(&["--bogus"]).unwrap_err().contains("--bogus"));
     }
 
     #[test]

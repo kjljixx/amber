@@ -5,6 +5,7 @@ edition = "2024"
 default-run = "amber"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossterm = "0.29"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }

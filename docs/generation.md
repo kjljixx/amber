@@ -84,6 +84,28 @@ to describe a gradient, `Up`/`Down` to change its speed. Gradients play at 8x
 the rate Jev suggests by default. Once Jev has made a gradient, the description
 stays above the clock until a new one replaces it.
 
+## A first gradient from the moment
+
+At startup the timer asks Jev for a gradient for the moment, so there is one
+before you type anything: `amber::ambient` builds a line such as "Friday golden
+hour in October (autumn), light rain, cool" from the local weekday, time of day,
+month and weather. Try `cargo run --offline --example ambient`.
+
+- The forecast comes from [Open-Meteo](https://open-meteo.com), which needs no
+  key. Where the machine is comes from its IP address, looked up at `ipwho.is`,
+  so both services see your IP. `--location Lisbon` names a place instead (it
+  is looked up at Open-Meteo), and `--no-weather` makes no lookups at all and
+  describes the time alone.
+- The timer waits up to 3 seconds for the weather; the default gradient plays
+  meanwhile. If the lookup fails or is slow, the description is the time alone.
+- Only the description goes to Jev. The place's name never does.
+- Day parts follow the sun when the forecast has sunrise and sunset (dawn,
+  golden hour, dusk) and the clock otherwise. The time used is the local time
+  at the weather's place, so the sun and the clock agree.
+- It makes one Jev request per launch. If there is no API key or the request
+  fails, nothing is shown, and a description you type is unaffected. A gradient
+  you ask for before it arrives is kept.
+
 For renderer-only consumers, use `default-features = false` in the Amber Cargo
 dependency. This removes the optional HTTP client and generation API.
 
