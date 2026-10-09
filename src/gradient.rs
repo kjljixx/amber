@@ -6,6 +6,8 @@ use crate::warp::WarpStack;
 const MAX_POINTS: usize = 256;
 const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.05..=10.0;
 const STRETCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
+const STRENGTH_RANGE: std::ops::RangeInclusive<f32> = 0.05..=20.0;
+const ANGLE_RANGE: std::ops::RangeInclusive<f32> = -180.0..=180.0;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +25,15 @@ pub struct Point {
     /// axis keeps `radius`. Measured in aspect-corrected space.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub stretch: f32,
+    /// Weight multiplier on this point's color. Above 1 lets a small point
+    /// reach its full color at its center; below 1 makes a faint tint. Also
+    /// shifts its seams outward or inward a little.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub strength: f32,
+    /// Rotates the region clockwise on screen, in degrees. Only visible when
+    /// `stretch` is not 1. Measured in aspect-corrected space.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub angle: f32,
 }
 
 fn one() -> f32 {
@@ -33,6 +44,10 @@ fn is_one(value: &f32) -> bool {
     *value == 1.0
 }
 
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
 impl Point {
     pub fn new(position: [f32; 2], color: Rgb) -> Self {
         Self {
@@ -40,6 +55,8 @@ impl Point {
             color,
             radius: 1.0,
             stretch: 1.0,
+            strength: 1.0,
+            angle: 0.0,
         }
     }
 
@@ -52,13 +69,25 @@ impl Point {
         self.stretch = stretch;
         self
     }
+
+    pub fn with_strength(mut self, strength: f32) -> Self {
+        self.strength = strength;
+        self
+    }
+
+    pub fn with_angle(mut self, angle: f32) -> Self {
+        self.angle = angle;
+        self
+    }
 }
 
 struct LabPoint {
     position: [f32; 2],
     color: Oklab,
-    /// Per-axis multipliers turning squared offsets into region-relative distance.
-    metric: [f32; 2],
+    /// Coefficients `[a, b, c]` turning an offset `(dx, dy)` into region-relative
+    /// squared distance: `a*dx^2 + b*dx*dy + c*dy^2`.
+    form: [f32; 3],
+    strength: f32,
 }
 
 pub struct Gradient {
@@ -102,6 +131,18 @@ impl Gradient {
         {
             return Err("point stretch must be finite and between 0.1 and 10");
         }
+        if points
+            .iter()
+            .any(|point| !STRENGTH_RANGE.contains(&point.strength))
+        {
+            return Err("point strength must be finite and between 0.05 and 20");
+        }
+        if points
+            .iter()
+            .any(|point| !ANGLE_RANGE.contains(&point.angle))
+        {
+            return Err("point angle must be finite and between -180 and 180 degrees");
+        }
 
         let radius = 0.04 + 0.28 * softness;
         Ok(Self {
@@ -110,7 +151,8 @@ impl Gradient {
                 .map(|point| LabPoint {
                     position: point.position,
                     color: rgb_to_oklab(point.color),
-                    metric: Self::metric(point.radius, point.stretch),
+                    form: Self::form(point.radius, point.stretch, point.angle),
+                    strength: point.strength,
                 })
                 .collect(),
             radius_squared: radius * radius,
@@ -124,13 +166,23 @@ impl Gradient {
     // `radius` raised to about sqrt(stretch) on every point, which is easy to
     // forget and hard to reason about. Keeping the short axis at `radius` means
     // `radius` always sets the width and softness and `stretch` only elongates.
-    fn metric(radius: f32, stretch: f32) -> [f32; 2] {
+    //
+    // `angle` then rotates the region clockwise on screen (y points down). The
+    // offset is split into components along the region's long axis `u` and its
+    // perpendicular `v`, each scaled by its own reach, and the result is
+    // expanded into a quadratic form in `(dx, dy)`. At angle 0 the cross term
+    // is exactly zero and the form reduces to the old per-axis multipliers.
+    fn form(radius: f32, stretch: f32, angle: f32) -> [f32; 3] {
         let wide = stretch.max(1.0);
         let tall = stretch.min(1.0);
         let radius_squared = radius * radius;
+        let along = 1.0 / (radius_squared * wide * wide);
+        let across = tall * tall / radius_squared;
+        let (sin, cos) = angle.to_radians().sin_cos();
         [
-            1.0 / (radius_squared * wide * wide),
-            tall * tall / radius_squared,
+            along * cos * cos + across * sin * sin,
+            2.0 * cos * sin * (along - across),
+            along * sin * sin + across * cos * cos,
         ]
     }
 
@@ -144,7 +196,8 @@ impl Gradient {
                 .map(|point| LabPoint {
                     position: [(point.position[0] - 0.5) * x_scale, point.position[1] - 0.5],
                     color: point.color,
-                    metric: point.metric,
+                    form: point.form,
+                    strength: point.strength,
                 })
                 .collect(),
             x_scale,
@@ -199,8 +252,9 @@ impl PreparedGradient {
         let mut nearest = f32::INFINITY;
 
         for (point, distance) in self.points.iter().zip(&mut distances) {
-            *distance = (position[0] - point.position[0]).powi(2) * point.metric[0]
-                + (position[1] - point.position[1]).powi(2) * point.metric[1];
+            let dx = position[0] - point.position[0];
+            let dy = position[1] - point.position[1];
+            *distance = dx * dx * point.form[0] + dx * dy * point.form[1] + dy * dy * point.form[2];
             nearest = nearest.min(*distance);
         }
 
@@ -208,8 +262,9 @@ impl PreparedGradient {
         let mut total_weight = 0.0;
         for (point, distance) in self.points.iter().zip(distances) {
             // Distances are relative to each point's own region. The nearest has
-            // weight 1, avoiding all weights underflowing.
-            let weight = (-(distance - nearest) / self.radius_squared).exp();
+            // weight `strength` (at least 0.05) before scaling, so the total
+            // cannot underflow.
+            let weight = point.strength * (-(distance - nearest) / self.radius_squared).exp();
             for (channel, color) in lab.iter_mut().zip(point.color) {
                 *channel += color * weight;
             }
@@ -472,6 +527,94 @@ mod tests {
         assert_eq!(across, plain.sample(0.5, 0.65)[0]);
     }
 
+    // A small light among dark points that sit close enough to blend into it.
+    fn crowded(light: Point) -> PreparedGradient {
+        let dark = |x, y| Point::new([x, y], [0, 0, 0]);
+        Gradient::new(
+            &[
+                light,
+                dark(0.4, 0.5),
+                dark(0.6, 0.5),
+                dark(0.5, 0.4),
+                dark(0.5, 0.6),
+            ],
+            0.3,
+        )
+        .unwrap()
+        .prepare(1.0)
+    }
+
+    #[test]
+    fn strength_lets_a_small_light_reach_its_color() {
+        let peak = |strength: f32| {
+            let light = Point::new([0.5, 0.5], [255, 255, 255])
+                .with_radius(0.12)
+                .with_strength(strength);
+            crowded(light).sample(0.5, 0.5)[0]
+        };
+        let (faint, normal, strong) = (peak(0.2), peak(1.0), peak(8.0));
+        assert!(
+            faint + 20 < normal && normal + 60 < strong,
+            "{faint} {normal} {strong}"
+        );
+        assert!(strong > 170, "{strong}");
+        assert!(
+            peak(20.0) > strong,
+            "more strength keeps approaching the color"
+        );
+    }
+
+    #[test]
+    fn strength_one_and_angle_zero_change_nothing() {
+        let plain = Point::new([0.5, 0.5], [255, 255, 255]).with_stretch(3.0);
+        let explicit = plain.clone().with_strength(1.0).with_angle(0.0);
+        let (a, b) = (lit(plain), lit(explicit));
+        for (x, y) in [(0.5, 0.65), (0.65, 0.5), (0.6, 0.6), (0.4, 0.45)] {
+            assert_eq!(a.sample(x, y), b.sample(x, y));
+        }
+    }
+
+    #[test]
+    fn angle_rotates_a_stretched_region_clockwise_on_screen() {
+        let white = Point::new([0.5, 0.5], [255, 255, 255]).with_stretch(4.0);
+        // A wide region turned a quarter turn matches the tall one.
+        let rotated = lit(white.clone().with_angle(90.0));
+        let tall = lit(Point::new([0.5, 0.5], [255, 255, 255]).with_stretch(0.25));
+        for (x, y) in [(0.5, 0.65), (0.65, 0.5), (0.6, 0.6), (0.4, 0.55)] {
+            let (a, b) = (rotated.sample(x, y)[0], tall.sample(x, y)[0]);
+            assert!(a.abs_diff(b) <= 1, "{a} vs {b} at ({x}, {y})");
+        }
+        // Positive angles point the long axis down and to the right (y is down).
+        let down_right = lit(white.clone().with_angle(45.0));
+        let (along, across) = (
+            down_right.sample(0.61, 0.61)[0],
+            down_right.sample(0.61, 0.39)[0],
+        );
+        assert!(along > across + 60, "{along} vs {across}");
+        // Negative angles mirror that.
+        let up_right = lit(white.clone().with_angle(-45.0));
+        let (along, across) = (
+            up_right.sample(0.61, 0.39)[0],
+            up_right.sample(0.61, 0.61)[0],
+        );
+        assert!(along > across + 60, "{along} vs {across}");
+        // Half a turn leaves the region where it was.
+        let flipped = lit(white.clone().with_angle(180.0));
+        let plain = lit(white);
+        for (x, y) in [(0.5, 0.65), (0.65, 0.5), (0.6, 0.6)] {
+            assert!(flipped.sample(x, y)[0].abs_diff(plain.sample(x, y)[0]) <= 1);
+        }
+    }
+
+    #[test]
+    fn angle_does_not_change_a_round_region() {
+        let round = lit(Point::new([0.5, 0.5], [255, 255, 255]));
+        let turned = lit(Point::new([0.5, 0.5], [255, 255, 255]).with_angle(37.0));
+        for (x, y) in [(0.5, 0.65), (0.65, 0.5), (0.6, 0.6), (0.4, 0.45)] {
+            assert!(round.sample(x, y)[0].abs_diff(turned.sample(x, y)[0]) <= 1);
+        }
+    }
+
     #[test]
     fn point_attributes_are_validated_and_capped() {
         let base = [
@@ -488,10 +631,25 @@ mod tests {
             points[1].stretch = stretch;
             assert!(Gradient::new(&points, 0.5).is_err(), "stretch {stretch}");
         }
+        for strength in [0.0, 0.04, 20.1, f32::NAN, f32::INFINITY, -1.0] {
+            let mut points = base.clone();
+            points[0].strength = strength;
+            assert!(Gradient::new(&points, 0.5).is_err(), "strength {strength}");
+        }
+        for angle in [-180.1, 180.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut points = base.clone();
+            points[1].angle = angle;
+            assert!(Gradient::new(&points, 0.5).is_err(), "angle {angle}");
+        }
         let mut points = base.to_vec();
         points[0].radius = 0.05;
         points[1].stretch = 10.0;
         assert!(Gradient::new(&points, 0.5).is_ok());
+        for (strength, angle) in [(0.05, -180.0), (20.0, 180.0)] {
+            points[0].strength = strength;
+            points[1].angle = angle;
+            assert!(Gradient::new(&points, 0.5).is_ok());
+        }
 
         let many = |count: usize| vec![base[0].clone(); count];
         assert!(Gradient::new(&many(MAX_POINTS), 0.5).is_ok());
@@ -507,11 +665,15 @@ mod tests {
             serde_json::to_string(&plain).unwrap(),
             r#"{"position":[0.1,0.2],"color":[1,2,3]}"#
         );
+        assert_eq!((plain.strength, plain.angle), (1.0, 0.0));
         let shaped: Point = serde_json::from_str(
-            r#"{"position":[0.1,0.2],"color":[1,2,3],"radius":0.5,"stretch":3.0}"#,
+            r#"{"position":[0.1,0.2],"color":[1,2,3],"radius":0.5,"stretch":3.0,"strength":4.0,"angle":30.0}"#,
         )
         .unwrap();
         assert_eq!((shaped.radius, shaped.stretch), (0.5, 3.0));
+        assert_eq!((shaped.strength, shaped.angle), (4.0, 30.0));
+        let text = serde_json::to_string(&shaped).unwrap();
+        assert!(text.contains("\"strength\":4.0") && text.contains("\"angle\":30.0"));
         assert!(
             serde_json::to_string(&shaped)
                 .unwrap()

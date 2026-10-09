@@ -4,7 +4,7 @@ Run `cargo run --offline -- --recipe examples/complex.json` to load the example.
 The app starts in Loaded mode; `m` cycles through Simple, Complex, and Loaded.
 Without `--recipe`, only Simple and Complex are available. Use `--help` for CLI usage.
 
-All fields except `motion_style`, `warp`, `points[].radius`, and `points[].stretch` are required. Unknown fields are rejected to catch spelling mistakes.
+All fields except `motion_style`, `warp`, and the optional `points[]` shape fields (`radius`, `stretch`, `strength`, `angle`) are required. Unknown fields are rejected to catch spelling mistakes.
 
 | Field | Meaning | Allowed values |
 | --- | --- | --- |
@@ -13,6 +13,8 @@ All fields except `motion_style`, `warp`, `points[].radius`, and `points[].stret
 | `points[].color` | sRGB `[red, green, blue]` | Each channel an integer 0–255 |
 | `points[].radius` | Optional width and edge softness of this point's region; defaults to `1` | 0.05–10 |
 | `points[].stretch` | Optional elongation of the region along its long axis; defaults to `1` | 0.1–10 |
+| `points[].strength` | Optional weight multiplier on the point's color; defaults to `1` | 0.05–20 |
+| `points[].angle` | Optional clockwise rotation of the region, in degrees; defaults to `0` | −180–180 |
 | `softness` | Width of color transitions | 0–1 |
 | `distortion` | Strength of folds | 0–1.5 |
 | `swirl` | Rotation strength and direction | −1–1 |
@@ -25,8 +27,20 @@ All fields except `motion_style`, `warp`, `points[].radius`, and `points[].stret
 gives a small, crisp spot (city lights), above 1 a broad glow. `stretch`
 elongates the region without changing that width: below 1 reaches `radius / stretch`
 vertically (tree trunks), above 1 reaches `radius * stretch` horizontally (bands
-and horizon glows). Both are measured in aspect-corrected space. Points that
-omit them render exactly as before. `examples/point-shapes.json` combines both.
+and horizon glows). Both are measured in aspect-corrected space.
+
+`strength` multiplies how hard a point pulls its color. A small light among
+dark points is normally blended down to a fraction of its color; `strength: 6`
+lets it reach most of it. Values above 1 also push the point's seams outward a
+little, so its region grows slightly; values below 1 make a faint tint that
+never takes over. `angle` rotates the region clockwise on screen (positive
+turns the long axis from horizontal toward down-right) and does nothing to a
+round point (`stretch: 1`). Like `stretch`, it is measured in aspect-corrected
+space, so on a wide image a 45° streak looks slightly flatter than 45°.
+
+Points that omit these fields render exactly as before.
+`examples/point-shapes.json` combines all four: a stretched horizon glow, tall
+trunks, a diagonal light shaft, and small bright lights.
 
 Playback speed and terminal controls are separate from the recipe. `motion: 0`
 disables drift; Space, `w`, and `d` keep their usual behavior.

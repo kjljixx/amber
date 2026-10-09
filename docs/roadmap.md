@@ -25,10 +25,6 @@ of the warp that point feels.
   that emit points, with named palette roles and depth-based atmospheric
   perspective. The current `Layout` enum, `superscatter_positions` and the
   per-layout motion mapping move into it.
-- **Point `strength`:** a weight multiplier so a small light can reach its full
-  color at its center. Small `radius` points currently peak at roughly half
-  their color because neighboring points still blend in.
-- **Point `angle`:** rotate a stretched region, for diagonal light shafts.
 - **Spatial culling:** a coarse grid so each pixel only evaluates nearby
   points (cutoff about `8 * radius^2` past the nearest). Needed before several
   hundred points are practical; output should match brute force within one
