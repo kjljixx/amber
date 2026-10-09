@@ -1,0 +1,87 @@
+{
+  "palette": {
+    "sky": "blue",
+    "glow": "coral",
+    "hill": "orange",
+    "deep": "brown"
+  },
+  "haze": {
+    "role": "glow",
+    "strength": 0.7,
+    "shade": 0.5
+  },
+  "style": {
+    "lightness": 2.2,
+    "saturation": 2.8,
+    "contrast": 3.0,
+    "energy": 1.5,
+    "focus": 1.0
+  },
+  "elements": [
+    {
+      "type": "gradient",
+      "from": "sky",
+      "to": "glow",
+      "y": [
+        0.0,
+        0.6
+      ],
+      "rows": 12,
+      "radius": 0.4,
+      "strength": 0.5,
+      "shade": [
+        -0.5,
+        0.4
+      ]
+    },
+    {
+      "type": "ridge",
+      "role": "hill",
+      "y": 0.54,
+      "amplitude": 0.04,
+      "frequency": 1.9,
+      "depth": 0.95,
+      "shade": 0.0,
+      "radius": 0.45,
+      "inset": 0.05
+    },
+    {
+      "type": "ridge",
+      "role": "hill",
+      "y": 0.64,
+      "amplitude": 0.06,
+      "frequency": 1.4,
+      "depth": 0.7,
+      "shade": -0.5,
+      "radius": 0.45,
+      "inset": 0.05
+    },
+    {
+      "type": "ridge",
+      "role": "hill",
+      "y": 0.76,
+      "amplitude": 0.08,
+      "frequency": 1.1,
+      "depth": 0.4,
+      "shade": -0.9,
+      "radius": 0.45,
+      "inset": 0.05
+    },
+    {
+      "type": "ridge",
+      "role": "deep",
+      "y": 0.9,
+      "amplitude": 0.09,
+      "frequency": 0.8,
+      "depth": 0.0,
+      "shade": -1.0,
+      "radius": 0.45,
+      "inset": 0.05
+    }
+  ],
+  "variation": 7,
+  "softness": 0.3,
+  "distortion": 0.3,
+  "motion": 0.4,
+  "motion_style": "flow"
+}

@@ -1,0 +1,102 @@
+{
+  "palette": {
+    "sky": "indigo",
+    "glow": "magenta",
+    "building": "black",
+    "warm": "amber",
+    "cool": "cyan",
+    "accent": "pink"
+  },
+  "haze": {
+    "role": "glow",
+    "strength": 0.5,
+    "shade": -0.2
+  },
+  "style": {
+    "lightness": 0.6,
+    "saturation": 2.8,
+    "contrast": 3.0,
+    "energy": 1.0,
+    "focus": 0.6
+  },
+  "elements": [
+    {
+      "type": "gradient",
+      "from": "sky",
+      "to": "glow",
+      "y": [
+        0.0,
+        0.62
+      ],
+      "rows": 10,
+      "radius": 0.4,
+      "strength": 0.4,
+      "shade": [
+        -0.8,
+        -0.2
+      ]
+    },
+    {
+      "type": "columns",
+      "role": "building",
+      "count": 12,
+      "x": [
+        -0.05,
+        1.05
+      ],
+      "y": 1.0,
+      "height": [
+        6,
+        10
+      ],
+      "width": 0.12,
+      "taper": 0.3,
+      "depth": [
+        0.0,
+        0.6
+      ],
+      "lean": 0.0,
+      "shade": -0.5
+    },
+    {
+      "type": "lights",
+      "count": 70,
+      "roles": [
+        {
+          "role": "warm",
+          "weight": 5
+        },
+        {
+          "role": "cool",
+          "weight": 2
+        },
+        {
+          "role": "accent",
+          "weight": 1
+        }
+      ],
+      "x": [
+        0.0,
+        1.0
+      ],
+      "y": [
+        0.68,
+        0.99
+      ],
+      "radius": [
+        0.05,
+        0.06
+      ],
+      "strength": 6,
+      "shade": [
+        0.5,
+        1.2
+      ]
+    }
+  ],
+  "variation": 3,
+  "distortion": 0.15,
+  "swirl": 0.0,
+  "motion": 0.3,
+  "motion_style": "wander"
+}

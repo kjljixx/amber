@@ -1,8 +1,8 @@
 # Roadmap
 
 Ideas discussed but not scheduled. Points are the only renderer primitive;
-scenes (redwood forest, desert hills, city lights) should be built from
-generators that emit points, plus a warp stack.
+scenes (see [scene-format.md](scene-format.md)) are built from generators that
+emit points, plus a warp stack.
 
 ## Per-point `wobble`
 
@@ -21,16 +21,23 @@ of the warp that point feels.
 
 ## Other deferred ideas
 
-- **Element layer:** generators (band, ridge, glow, scatter, columns, shaft)
-  that emit points, with named palette roles and depth-based atmospheric
-  perspective. The current `Layout` enum, `superscatter_positions` and the
-  per-layout motion mapping move into it.
+- **Jev scene picking:** let Jev choose a bundled scene and a color per
+  palette role instead of one of six layouts. The scenes, roles and `variation`
+  seed already exist; what is missing is the decision request and parsing.
+- **More elements:** soft clouds or blobs, stars, a ground plane, and
+  rows of repeated shapes (fences, waves). Each is one variant in
+  `src/scene/elements.rs`.
+- **Backdrop balance:** elements currently need `radius` and `strength` tuned
+  so shapes show through gradients (see Layering in the scene docs). A helper
+  that sets a backdrop's weight from the shapes in front would remove that.
+- **Retire the six layouts' special casing:** `grid` keeps their random-draw
+  order so output stays identical. If exact reproduction stops mattering, they
+  could be rebuilt from the newer elements with fewer points.
 - **Spatial culling:** a coarse grid so each pixel only evaluates nearby
   points (cutoff about `8 * radius^2` past the nearest). Needed before several
   hundred points are practical; output should match brute force within one
   color level.
 - **Point limit as a validation constant:** drop the fixed `[f32; MAX_POINTS]`
   stack array in `sample()` and keep only a generous load-time limit.
-- **Jev scene picking:** choose a scene template and colors per palette role
-  instead of one of six layouts. Derive the warp seed from the prompt hash;
-  generated recipes all use seed 58 today.
+- **Per-prompt warp seed:** derive it from the prompt hash; generated recipes
+  all use seed 58 today.

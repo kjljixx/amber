@@ -10,7 +10,7 @@ mod cli;
 mod speed_control;
 use speed_control::SpeedControl;
 
-use amber::{GradientView, Recipe, presets};
+use amber::{GradientView, Recipe, Scene, presets, scene};
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -22,6 +22,25 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// An existing file wins; otherwise the name must be a bundled scene.
+fn load_scene(name: &str) -> io::Result<Recipe> {
+    let path = std::path::Path::new(name);
+    let scene = if path.is_file() {
+        Scene::load(path)?
+    } else {
+        scene::template(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no scene file or bundled scene named '{name}' (bundled: {})",
+                    scene::template_names().collect::<Vec<_>>().join(", ")
+                ),
+            )
+        })?
+    };
+    scene.compile().map_err(io::Error::other)
+}
+
 fn run() -> io::Result<()> {
     let command = cli::parse(std::env::args_os().skip(1)).map_err(|message| {
         io::Error::new(
@@ -29,7 +48,7 @@ fn run() -> io::Result<()> {
             format!("{message}\n{}", cli::USAGE),
         )
     })?;
-    let cli::Command::Run { recipe } = command else {
+    let cli::Command::Run { recipe, scene } = command else {
         println!("{}", cli::USAGE);
         return Ok(());
     };
@@ -39,6 +58,13 @@ fn run() -> io::Result<()> {
         presets.push(presets::Preset {
             name: "Loaded",
             recipe: Recipe::load(&path)?,
+        });
+        mode = presets.len() - 1;
+    }
+    if let Some(name) = scene {
+        presets.push(presets::Preset {
+            name: "Scene",
+            recipe: load_scene(&name)?,
         });
         mode = presets.len() - 1;
     }

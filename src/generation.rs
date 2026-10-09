@@ -5,45 +5,16 @@ use std::{collections::BTreeMap, path::Path, time::Duration};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{Point, Recipe, color::oklab_to_rgb};
+use crate::{
+    Recipe,
+    scene::{COLORS, ColorSpec, Element, Scene, Style, family},
+};
 
 const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 pub const DEFAULT_MODEL: &str = "typesafe/jev-1.13";
 
-// OKLCH families; local conversion keeps the model away from raw pixel math.
-const COLORS: &[(&str, f32, f32, f32)] = &[
-    ("red", 25.0, 0.20, 0.62),
-    ("coral", 35.0, 0.15, 0.72),
-    ("orange", 55.0, 0.18, 0.70),
-    ("amber", 75.0, 0.15, 0.76),
-    ("yellow", 100.0, 0.17, 0.90),
-    ("lime", 125.0, 0.17, 0.84),
-    ("green", 150.0, 0.14, 0.65),
-    ("teal", 185.0, 0.11, 0.65),
-    ("cyan", 205.0, 0.13, 0.80),
-    ("sky", 235.0, 0.10, 0.80),
-    ("blue", 260.0, 0.18, 0.58),
-    ("indigo", 275.0, 0.15, 0.38),
-    ("violet", 300.0, 0.16, 0.62),
-    ("magenta", 335.0, 0.22, 0.65),
-    ("pink", 355.0, 0.12, 0.80),
-    ("brown", 55.0, 0.07, 0.42),
-    ("cream", 85.0, 0.04, 0.92),
-    ("white", 250.0, 0.01, 0.97),
-    ("grey", 250.0, 0.015, 0.62),
-    ("black", 270.0, 0.015, 0.14),
-];
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Layout {
-    Sky,
-    Horizon,
-    Glow,
-    Scatter,
-    Superscatter,
-    Wash,
-}
+/// Jev's layout choices are the scene grid rules.
+pub use crate::scene::GridRule as Layout;
 
 #[derive(Clone, Debug)]
 pub struct Design {
@@ -235,13 +206,6 @@ enum Answer {
     },
 }
 
-fn family(name: &str) -> Option<(f32, f32, f32)> {
-    COLORS
-        .iter()
-        .find(|(id, _, _, _)| *id == name)
-        .map(|(_, hue, chroma, light)| (*hue, *chroma, *light))
-}
-
 fn parse_design(answers: &BTreeMap<String, Answer>) -> Result<Design, String> {
     let color = |name: &str, excluded: &[&str]| -> Result<String, String> {
         let Some(Answer::Choice {
@@ -305,8 +269,10 @@ fn parse_design(answers: &BTreeMap<String, Answer>) -> Result<Design, String> {
 }
 
 impl Design {
-    /// A deterministic composition for the same prompt and decisions.
-    pub fn to_recipe(&self, prompt: &str) -> Result<Recipe, String> {
+    /// The scene this design describes: its three hues as the `main`, `second`
+    /// and `accent` roles and one of the original grid layouts. The prompt
+    /// seeds the placement, so the same prompt and decisions always agree.
+    pub fn to_scene(&self, prompt: &str) -> Result<Scene, String> {
         for (name, value, max) in [
             ("lightness", self.lightness, 4.0),
             ("saturation", self.saturation, 4.0),
@@ -324,184 +290,48 @@ impl Design {
                 hues.swap(0, index);
             }
         }
-        let families = hues
-            .iter()
-            .map(|hue| family(hue).ok_or_else(|| "Unknown design color family".to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut rng = prompt
-            .trim()
-            .to_lowercase()
-            .bytes()
-            .fold(2166136261u32, |hash, byte| {
-                (hash ^ u32::from(byte)).wrapping_mul(16777619)
-            });
-        let mut random = || {
-            rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-            (rng >> 8) as f32 / 16777216.0
-        };
-        let base = 0.28 + self.lightness * 0.15;
-        let contrast = 0.10 + self.contrast / 3.0 * 0.24;
-        let scatter_phase = random() * std::f32::consts::TAU;
-        let mut points: Vec<Point> = Vec::new();
-        let scattered_positions = if self.layout == Layout::Superscatter {
-            superscatter_positions(&mut random)
-        } else {
-            Vec::new()
-        };
-        let mut assigned_families = Vec::new();
-        // Eighteen color centers cover edges as well as the interior.
-        for row in 0..6 {
-            for column in 0..3 {
-                let [x, y] = if self.layout == Layout::Superscatter {
-                    scattered_positions[row * 3 + column]
-                } else {
-                    [
-                        (column as f32 / 2.0 + (random() - 0.5) * 0.08).clamp(0.0, 1.0),
-                        (row as f32 / 5.0 + (random() - 0.5) * 0.06).clamp(0.0, 1.0),
-                    ]
-                };
-                let distance = (x - 0.5).hypot((y - 0.5) * 1.2);
-                let (index, shade) = match self.layout {
-                    Layout::Sky => (
-                        if y < 0.45 {
-                            0
-                        } else if y < 0.75 {
-                            1
-                        } else {
-                            2
-                        },
-                        (y - 0.5) * 2.0,
-                    ),
-                    Layout::Horizon => (
-                        if (y - 0.58).abs() < 0.14 {
-                            2
-                        } else if y < 0.58 {
-                            0
-                        } else {
-                            1
-                        },
-                        if (y - 0.58).abs() < 0.14 { 1.0 } else { -0.4 },
-                    ),
-                    Layout::Glow => (
-                        if distance < 0.25 {
-                            2
-                        } else if distance < 0.45 {
-                            1
-                        } else {
-                            0
-                        },
-                        1.0 - 3.2 * distance,
-                    ),
-                    Layout::Scatter => {
-                        let value = 0.5
-                            + 0.25 * (5.3 * x + scatter_phase).sin()
-                            + 0.25 * (4.1 * y + 1.7 * x).sin();
-                        (
-                            if value < 0.5 {
-                                0
-                            } else if value < 0.82 {
-                                1
-                            } else {
-                                2
-                            },
-                            (value - 0.5) * 1.6,
-                        )
-                    }
-                    Layout::Superscatter => {
-                        let mut counts = [0; 3];
-                        let mut penalties = [0.0_f32; 3];
-                        for (point, &family) in points.iter().zip(&assigned_families) {
-                            counts[family] += 1;
-                            let distance = (x - point.position[0]).hypot(y - point.position[1]);
-                            penalties[family] += 1.0 / distance.max(0.03).powi(2);
-                        }
-                        // Primary / secondary / accent quotas retain palette hierarchy.
-                        // Normalize neighbor penalties so the primary can recur more often.
-                        let targets = [9, 6, 3];
-                        for family in 0..3 {
-                            penalties[family] /= targets[family] as f32;
-                        }
-                        let start = (random() * 3.0) as usize;
-                        let index = (0..3)
-                            .map(|offset| (start + offset) % 3)
-                            .filter(|&family| counts[family] < targets[family])
-                            .min_by(|&a, &b| penalties[a].total_cmp(&penalties[b]))
-                            .unwrap();
-                        (index, (random() - 0.5) * 1.2)
-                    }
-                    Layout::Wash => (
-                        if row == 3 && column == 1 {
-                            1
-                        } else if row == 5 && column == 0 {
-                            2
-                        } else {
-                            0
-                        },
-                        (random() - 0.5) * 0.4,
-                    ),
-                };
-                assigned_families.push(index);
-                let (hue, chroma, preferred_light) = families[index];
-                let light = (base + shade * contrast) * 0.6 + preferred_light * 0.4;
-                let light = (light + (random() - 0.5) * 0.04).clamp(0.08, 0.97);
-                let chroma = chroma * (0.5 + 0.7 * self.saturation / 4.0);
-                let angle = (hue + (random() - 0.5) * 12.0).to_radians();
-                points.push(Point::new(
-                    [x, y],
-                    oklab_to_rgb([light, chroma * angle.cos(), chroma * angle.sin()]),
-                ));
-            }
+        let mut palette = BTreeMap::new();
+        for (role, hue) in ["main", "second", "accent"].into_iter().zip(hues) {
+            family(&hue).ok_or_else(|| "Unknown design color family".to_string())?;
+            palette.insert(role.to_string(), ColorSpec::Family(hue));
         }
-        let energy = self.energy / 4.0;
-        let recipe = Recipe {
-            points,
-            softness: if self.layout == Layout::Superscatter {
-                0.24 + 0.18 * self.focus / 3.0
-            } else {
-                0.36 + 0.22 * self.focus / 3.0
+        Ok(Scene {
+            palette,
+            haze: None,
+            style: Style {
+                lightness: self.lightness,
+                saturation: self.saturation,
+                contrast: self.contrast,
+                energy: self.energy,
+                focus: self.focus,
             },
-            distortion: 0.8 + 0.5 * energy,
-            swirl: if energy > 0.5 {
-                (random() - 0.5) * 0.6 * (energy - 0.5) * 2.0
-            } else {
-                0.0
-            },
-            seed: 58,
-            motion: 0.3 + 0.6 * energy,
-            motion_style: match self.layout {
+            elements: vec![Element::Grid { rule: self.layout }],
+            variation: prompt
+                .trim()
+                .to_lowercase()
+                .bytes()
+                .fold(2166136261u32, |hash, byte| {
+                    (hash ^ u32::from(byte)).wrapping_mul(16777619)
+                }),
+            softness: (self.layout == Layout::Superscatter).then(|| 0.24 + 0.18 * self.focus / 3.0),
+            distortion: None,
+            swirl: None,
+            motion: None,
+            motion_style: Some(match self.layout {
                 Layout::Sky | Layout::Horizon => crate::MotionStyle::Flow,
                 Layout::Glow | Layout::Scatter | Layout::Superscatter | Layout::Wash => {
                     crate::MotionStyle::Wander
                 }
-            },
+            }),
+            warp_seed: 58,
             warp: Vec::new(),
-        };
-        recipe.compile().map_err(str::to_string)?;
-        Ok(recipe)
+        })
     }
-}
 
-// Best-candidate sampling spreads points without imposing rows or columns.
-fn superscatter_positions(random: &mut impl FnMut() -> f32) -> Vec<[f32; 2]> {
-    let mut positions: Vec<[f32; 2]> = Vec::with_capacity(18);
-    for _ in 0..18 {
-        let mut best = [random(), random()];
-        let mut best_distance = -1.0;
-        for _ in 0..24 {
-            let candidate = [random(), random()];
-            let distance = positions
-                .iter()
-                .map(|point| (candidate[0] - point[0]).powi(2) + (candidate[1] - point[1]).powi(2))
-                .fold(f32::INFINITY, f32::min);
-            if distance > best_distance {
-                best = candidate;
-                best_distance = distance;
-            }
-        }
-        positions
-            .push(best.map(|coordinate| (coordinate + (random() - 0.5) * 0.02).clamp(0.0, 1.0)));
+    /// A deterministic composition for the same prompt and decisions.
+    pub fn to_recipe(&self, prompt: &str) -> Result<Recipe, String> {
+        self.to_scene(prompt)?.compile()
     }
-    positions
 }
 
 #[cfg(test)]

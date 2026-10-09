@@ -1,6 +1,7 @@
 # JSON gradient recipes
 
 Run `cargo run --offline -- --recipe examples/complex.json` to load the example.
+To describe a picture as named colors and elements instead of raw points, see [scene-format.md](scene-format.md).
 The app starts in Loaded mode; `m` cycles through Simple, Complex, and Loaded.
 Without `--recipe`, only Simple and Complex are available. Use `--help` for CLI usage.
 

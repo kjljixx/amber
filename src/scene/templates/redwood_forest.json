@@ -1,0 +1,173 @@
+{
+  "palette": {
+    "canopy": "green",
+    "mist": "cream",
+    "trunk": "#3a2016",
+    "floor": "brown",
+    "light": "yellow"
+  },
+  "haze": {
+    "role": "mist",
+    "strength": 0.8,
+    "shade": 0.4
+  },
+  "style": {
+    "lightness": 2.4,
+    "saturation": 2.4,
+    "contrast": 3.0,
+    "energy": 1.5,
+    "focus": 0.8
+  },
+  "elements": [
+    {
+      "type": "gradient",
+      "from": "canopy",
+      "to": "mist",
+      "y": [
+        0.0,
+        0.5
+      ],
+      "rows": 8,
+      "radius": 0.4,
+      "strength": 0.4,
+      "shade": [
+        -1.0,
+        0.4
+      ]
+    },
+    {
+      "type": "gradient",
+      "from": "mist",
+      "to": "floor",
+      "y": [
+        0.62,
+        1.0
+      ],
+      "rows": 8,
+      "radius": 0.4,
+      "strength": 0.4,
+      "shade": [
+        0.3,
+        -0.9
+      ]
+    },
+    {
+      "type": "columns",
+      "role": "trunk",
+      "count": 14,
+      "x": [
+        -0.05,
+        1.05
+      ],
+      "y": 0.55,
+      "height": [
+        7,
+        10
+      ],
+      "width": 0.1,
+      "depth": [
+        0.6,
+        0.9
+      ],
+      "taper": 0.3,
+      "lean": 1.5,
+      "shade": -0.3
+    },
+    {
+      "type": "columns",
+      "role": "trunk",
+      "count": 7,
+      "x": [
+        0.0,
+        1.0
+      ],
+      "y": 0.55,
+      "height": [
+        7,
+        10
+      ],
+      "width": 0.16,
+      "depth": [
+        0.3,
+        0.5
+      ],
+      "taper": 0.3,
+      "lean": 1.5,
+      "shade": -0.4
+    },
+    {
+      "type": "columns",
+      "role": "trunk",
+      "count": 3,
+      "x": [
+        0.1,
+        0.9
+      ],
+      "y": 0.55,
+      "height": [
+        7,
+        10
+      ],
+      "width": 0.3,
+      "depth": [
+        0.0,
+        0.1
+      ],
+      "taper": 0.2,
+      "lean": 1.0,
+      "shade": -0.5
+    },
+    {
+      "type": "shafts",
+      "role": "light",
+      "count": 3,
+      "x": [
+        0.1,
+        0.9
+      ],
+      "y": [
+        0.2,
+        0.6
+      ],
+      "width": 0.08,
+      "depth": 0.3,
+      "shade": 0.4,
+      "strength": 1.2
+    }
+  ],
+  "variation": 11,
+  "distortion": 0.0,
+  "swirl": 0.0,
+  "motion": 0.4,
+  "motion_style": "wander",
+  "warp": [
+    {
+      "type": "folds",
+      "displace": "x",
+      "amplitude": 1.0,
+      "waves": [
+        {
+          "amplitude": 0.03,
+          "frequency": 3.0
+        },
+        {
+          "amplitude": 0.012,
+          "frequency": 7.0,
+          "speed": -1
+        }
+      ]
+    },
+    {
+      "type": "noise",
+      "strength": 0.2,
+      "frequency": [
+        1.0,
+        0.35
+      ],
+      "weight": [
+        1.0,
+        0.25
+      ]
+    }
+  ]
+}
