@@ -96,6 +96,20 @@ impl CompiledRecipe {
         warped: bool,
         drifting: bool,
     ) -> PreparedGradient {
+        self.prepare_intensified(aspect, phase, travel, warped, drifting, 1.0)
+    }
+
+    /// Like `prepare_at`, with the warp displacements multiplied by `intensity`
+    /// (1 leaves the recipe as written).
+    pub fn prepare_intensified(
+        &self,
+        aspect: f32,
+        phase: f32,
+        travel: f64,
+        warped: bool,
+        drifting: bool,
+        intensity: f32,
+    ) -> PreparedGradient {
         let motion = if drifting { self.motion } else { 0.0 };
         let field = self.gradient.prepare(aspect);
         let field = match self.motion_style {
@@ -104,16 +118,18 @@ impl CompiledRecipe {
             MotionStyle::Wander => field.with_wander(travel, motion, self.warp.seed()),
         };
         field.with_warp(if warped {
-            self.warp.at(&Clock {
-                phase,
-                travel,
-                motion,
-                aspect,
-                inherited: match self.motion_style {
-                    MotionStyle::Loop => LayerMotion::Cycle,
-                    MotionStyle::Flow | MotionStyle::Wander => LayerMotion::Drift,
-                },
-            })
+            self.warp
+                .at(&Clock {
+                    phase,
+                    travel,
+                    motion,
+                    aspect,
+                    inherited: match self.motion_style {
+                        MotionStyle::Loop => LayerMotion::Cycle,
+                        MotionStyle::Flow | MotionStyle::Wander => LayerMotion::Drift,
+                    },
+                })
+                .intensified(intensity)
         } else {
             Warp::default()
         })

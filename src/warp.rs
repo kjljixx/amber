@@ -599,6 +599,22 @@ impl Warp {
             .iter()
             .fold(position, |position, step| step.apply(position))
     }
+
+    /// The same layers with every displacement multiplied by `intensity`.
+    /// Tilt only rotates, so it is left alone.
+    pub fn intensified(mut self, intensity: f32) -> Self {
+        for step in &mut self.steps {
+            match step {
+                Step::Swirl { strength, .. } => *strength *= intensity,
+                Step::Folds { amplitude, .. } | Step::Ripple { amplitude, .. } => {
+                    *amplitude *= intensity;
+                }
+                Step::Noise { strength, .. } => strength.iter_mut().for_each(|s| *s *= intensity),
+                Step::Tilt { .. } => {}
+            }
+        }
+        self
+    }
 }
 
 impl Step {

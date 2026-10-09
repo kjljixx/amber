@@ -55,6 +55,56 @@ make `update` report that a redraw is needed. Layout changes require a host redr
 `stats()` reports the latest sampling duration and total preview rebuilds.
 The host measures total frame time, including its own widgets and terminal output.
 
+## Reacting to something outside
+
+`set_excitement(Excitement { level, pulse, activity, tone })` stirs the view up.
+All but `tone` run from 0 to 1:
+
+- `level` is sustained loudness: livelier and faster.
+- `pulse` is a hit that decays by itself: a surge forward and a harder warp.
+- `activity` is how much the sound is changing, with no beat needed: a run of
+  notes keeps it up, a held chord lets it fall. It speeds and warps continuously.
+- `tone` is where the sound sits between dark and bright. Its *changes* steer the
+  picture, forward as it rises and back as it falls, so a melody pushes the
+  gradient around and a held note leaves it be. `None` means no steering.
+
+At zero the picture is exactly the recipe's own, and a paused view stays still.
+`set_reactivity(Reactivity { speed, kick, busy, warp, steer })` sets how much full
+excitement adds. The speeds are radians per second *added* to the view's own, so
+the music moves a calm gradient and a fast one by the same amount, and the speed
+control does not change how hard it hits: the defaults are 3 from `level`, 6 from
+`pulse` and 5 from `activity`. Warp strength grows by `warp` (1 doubles it) at
+full `pulse`, half as much from `activity` and a quarter from `level`. `steer` is
+20 radians across the whole tone range (about 4 per octave). Keep the frame
+interval short (about 33 ms) while excited so a beat is seen.
+
+`amber::audio` is one source of it. `Analyzer` takes mono samples and reports
+`level` (loudness against the last few seconds, so quiet and loud music both
+reach the top), `pulse` (any onset in the spectrum between 30 Hz and 4 kHz, a
+plucked note as well as a kick, with soft ones giving small pulses), `activity`
+(that change against the biggest lately) and `tone` (the spectral centroid,
+100 Hz to 4 kHz over octaves).
+`take()` returns the strongest pulse since its last call. With the `audio`
+feature (on by default; it needs ALSA headers on Linux, so use
+`default-features = false, features = ["generation"]` to leave it out), `Capture`
+runs an analyzer on a device:
+
+```rust
+let mut capture = Capture::start(Source::System, 1.0);
+// every pass of the event loop
+view.set_excitement(capture.poll());
+// capture.status() is Starting, Listening(device) or Failed(message)
+```
+
+`Source::System` records what the machine plays: through a Core Audio tap on
+macOS 14.6 or later (the first use asks to record system audio) and WASAPI
+loopback on Windows. Elsewhere it looks for a "monitor" input, which is
+untested. `Source::Microphone` and `Source::Named("BlackHole")` choose other
+devices. Sound is analyzed as it arrives and never stored or sent anywhere.
+
+`cargo run --offline --example listen` prints what it hears: level, activity, tone and pulse. In the timer, `a` turns it on or off, and
+`--audio`, `--audio-from`, `--sensitivity` and `--list-audio` choose how.
+
 ## Layering
 
 Render the gradient first and other widgets afterward. Solid panels should clear

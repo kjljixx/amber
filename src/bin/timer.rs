@@ -12,6 +12,14 @@
 //! Once Jev has made a gradient, the description stays centered above the clock
 //! until a new one replaces it.
 //!
+//! `a` makes the gradient react to sound: it flows faster and warps harder with
+//! the loudness of whatever the machine is playing, and surges on each beat. It
+//! only listens, never records or sends anything. `--audio` starts that at
+//! launch, `--audio-from mic` (or part of a device's name) listens somewhere
+//! else, `--sensitivity 2` makes it respond to quieter sound, and `--list-audio`
+//! prints the devices there are. On macOS the first time asks permission to
+//! record system audio.
+//!
 //! The first gradient is made for the moment: the weekday, time of day, month
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
 //! cool". The weather is for wherever the machine's IP address seems to be;
@@ -32,8 +40,9 @@ use std::{
 };
 
 use amber::{
-    Digits, GradientView,
+    Digits, Excitement, GradientView, Reactivity,
     ambient::{Ambient, Place},
+    audio::Source,
     blend_samples,
     generation::{GeneratedGradient, Generator},
     presets,
@@ -70,6 +79,15 @@ const BASE_SPEED: f64 = 0.15;
 /// two, so 6 steps is 8x. With the base rate that is 1.2 radians per second.
 const DEFAULT_SPEED_STEPS: i32 = 6;
 const MAX_PROMPT_CHARS: usize = 1000;
+/// Frame spacing normally, and while sound is moving the gradient: short enough
+/// to follow a beat.
+const CALM_FRAME: Duration = Duration::from_millis(50);
+const LIVELY_FRAME: Duration = Duration::from_millis(33);
+/// How long a message about the audio stays at the top.
+const NOTICE: Duration = Duration::from_secs(4);
+/// How long to listen to silence before suggesting something is wrong.
+#[cfg(feature = "audio")]
+const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
 /// How far the caption's backing is darkened, and how many cells it reaches
 /// past each end of the text.
 const SCRIM_ALPHA: f32 = 0.3;
@@ -486,7 +504,22 @@ fn apply(
 ) -> io::Result<()> {
     view.set_recipe(&gradient.recipe)
         .map_err(io::Error::other)?;
+    view.set_reactivity(reactivity_for(gradient.design.energy));
     speed.set_base(gradient.radians_per_second, view)
+}
+
+/// How hard sound pushes the picture: the warp and the steering follow Jev's
+/// energy score (0 to 4), at 0.6 times the default for a still, calm gradient
+/// up to 1.2 times for a very energetic one. The speed boost is added in radians
+/// per second and stays the same for all of them.
+fn reactivity_for(energy: f32) -> Reactivity {
+    let scale = 0.6 + 0.15 * energy.clamp(0.0, 4.0);
+    let normal = Reactivity::default();
+    Reactivity {
+        warp: normal.warp * scale,
+        steer: normal.steer * scale,
+        ..normal
+    }
 }
 
 /// What to play and say when `phase` has just begun.
@@ -551,39 +584,184 @@ fn main() -> std::process::ExitCode {
 #[derive(Debug, PartialEq)]
 enum Command {
     AlarmTest,
-    /// Run the clock, starting from a description of this moment and `place`'s
-    /// weather; with no place, of the time alone.
-    Clock(Option<Place>),
+    ListAudio,
+    Clock(Options),
 }
 
-const USAGE: &str = "options: --location <city> | --no-weather | --alarm-test";
+#[derive(Debug, PartialEq)]
+struct Options {
+    /// Start from a description of this moment and this place's weather; with no
+    /// place, of the time alone.
+    place: Option<Place>,
+    /// Listen for sound from the start, not only once `a` is pressed.
+    listen: bool,
+    source: Source,
+    sensitivity: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            place: Some(Place::Here),
+            listen: false,
+            source: Source::System,
+            sensitivity: 1.0,
+        }
+    }
+}
+
+const USAGE: &str = "options: --location <city> | --no-weather | --audio | \
+--audio-from <system|mic|device> | --sensitivity <number> | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
-    let mut place = Some(Place::Here);
+    let mut options = Options::default();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name.to_string(), Some(value.to_string())),
+            None => (arg.clone(), None),
+        };
+        let mut value = |what: &str| {
+            inline
+                .clone()
+                .or_else(|| args.next())
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("{name} needs {what}"))
+        };
+        match name.as_str() {
             "--alarm-test" => return Ok(Command::AlarmTest),
-            "--no-weather" => place = None,
+            "--list-audio" => return Ok(Command::ListAudio),
+            "--no-weather" => options.place = None,
+            "--audio" => options.listen = true,
             "--location" => {
-                let name = args.next().filter(|name| !name.trim().is_empty());
-                place = Some(Place::Named(
-                    name.ok_or("--location needs a place, such as --location Lisbon")?,
-                ));
+                options.place = Some(Place::Named(value("a place, such as --location Lisbon")?));
             }
-            other => match other.strip_prefix("--location=") {
-                Some(name) if !name.trim().is_empty() => place = Some(Place::Named(name.into())),
-                _ => return Err(format!("unknown argument '{other}'; {USAGE}")),
-            },
+            "--audio-from" => {
+                options.listen = true;
+                options.source = match value("system, mic or part of a device's name")?.as_str() {
+                    "system" => Source::System,
+                    "mic" | "microphone" => Source::Microphone,
+                    device => Source::Named(device.to_string()),
+                };
+            }
+            "--sensitivity" => {
+                options.sensitivity = value("a number such as 2")?
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|number| number.is_finite() && *number > 0.0)
+                    .ok_or("--sensitivity needs a positive number such as 2")?;
+            }
+            _ => return Err(format!("unknown argument '{arg}'; {USAGE}")),
+        }
+        if inline.is_some()
+            && !matches!(
+                name.as_str(),
+                "--location" | "--audio-from" | "--sensitivity"
+            )
+        {
+            return Err(format!("{name} takes no value; {USAGE}"));
         }
     }
-    Ok(Command::Clock(place))
+    Ok(Command::Clock(options))
+}
+
+/// What the machine's sound is doing, and anything worth telling the user.
+#[derive(Default)]
+struct Heard {
+    excitement: Excitement,
+    notice: Option<String>,
+    /// Listening cannot go on; drop the listener.
+    stop: bool,
+}
+
+/// Turns the machine's sound into excitement for the gradient.
+#[cfg(feature = "audio")]
+struct Listener {
+    capture: amber::audio::Capture,
+    started: Option<Instant>,
+    hinted: bool,
+}
+
+#[cfg(feature = "audio")]
+impl Listener {
+    fn start(source: Source, sensitivity: f32) -> Result<Self, String> {
+        Ok(Self {
+            capture: amber::audio::Capture::start(source, sensitivity),
+            started: None,
+            hinted: false,
+        })
+    }
+
+    fn poll(&mut self, now: Instant) -> Heard {
+        use amber::audio::Status;
+        let mut heard = Heard::default();
+        match self.capture.status().clone() {
+            Status::Starting => return heard,
+            Status::Failed(message) => {
+                heard.notice = Some(format!("Audio: {message}"));
+                heard.stop = true;
+                return heard;
+            }
+            Status::Listening(device) => {
+                if self.started.is_none() {
+                    self.started = Some(now);
+                    heard.notice = Some(format!("Listening to {device}"));
+                }
+            }
+        }
+        heard.excitement = self.capture.poll();
+        let quiet_for = self
+            .started
+            .map_or(Duration::ZERO, |at| now.duration_since(at));
+        if !self.hinted && quiet_for > SILENCE_HINT_AFTER && !self.capture.heard() {
+            self.hinted = true;
+            heard.notice = Some(if cfg!(target_os = "macos") {
+                "No sound yet. Is something playing? Terminal needs permission to record system audio".into()
+            } else {
+                "No sound yet. Is something playing?".into()
+            });
+        }
+        heard
+    }
+}
+
+#[cfg(not(feature = "audio"))]
+struct Listener;
+
+#[cfg(not(feature = "audio"))]
+impl Listener {
+    fn start(_: Source, _: f32) -> Result<Self, String> {
+        Err("this build has no audio support (build with --features audio)".into())
+    }
+
+    fn poll(&mut self, _: Instant) -> Heard {
+        Heard::default()
+    }
+}
+
+fn list_audio() -> io::Result<()> {
+    #[cfg(feature = "audio")]
+    {
+        for device in amber::audio::list_devices().map_err(io::Error::other)? {
+            println!("{device}");
+        }
+        Ok(())
+    }
+    #[cfg(not(feature = "audio"))]
+    Err(io::Error::other("this build has no audio support"))
+}
+
+/// A short message drawn along the top of the screen.
+struct Notice {
+    text: String,
+    until: Instant,
 }
 
 fn run() -> io::Result<()> {
-    let place = match parse_args(std::env::args().skip(1)).map_err(io::Error::other)? {
+    let options = match parse_args(std::env::args().skip(1)).map_err(io::Error::other)? {
         Command::AlarmTest => return alarm_test(),
-        Command::Clock(place) => place,
+        Command::ListAudio => return list_audio(),
+        Command::Clock(options) => options,
     };
     let start = Instant::now();
     let mut background =
@@ -591,7 +769,21 @@ fn run() -> io::Result<()> {
     let mut speed = SpeedControl::new(BASE_SPEED);
     speed.change(DEFAULT_SPEED_STEPS, &mut background)?;
     let mut generator = Generator::new();
-    let mut ambient = Ambient::start(place);
+    let mut ambient = Ambient::start(options.place);
+    let mut notice: Option<Notice> = None;
+    let mut listener = None;
+    if options.listen {
+        match Listener::start(options.source.clone(), options.sensitivity) {
+            Ok(started) => listener = Some(started),
+            Err(message) => {
+                notice = Some(Notice {
+                    text: format!("Audio: {message}"),
+                    until: start + NOTICE,
+                });
+            }
+        }
+    }
+    let mut lively = false;
     let mut prompt = Prompt::default();
     let mut clock = Clock::new(start);
     let mut shown = label(clock.phase().length());
@@ -633,6 +825,36 @@ fn run() -> io::Result<()> {
                 shown = current;
                 redraw = true;
             }
+            if notice.as_ref().is_some_and(|notice| now >= notice.until) {
+                notice = None;
+                redraw = true;
+            }
+            let mut excitement = Excitement::default();
+            let mut stop = false;
+            if let Some(active) = listener.as_mut() {
+                let heard = active.poll(now);
+                excitement = heard.excitement;
+                stop = heard.stop;
+                if let Some(text) = heard.notice {
+                    let until = now + if stop { 2 * NOTICE } else { NOTICE };
+                    notice = Some(Notice { text, until });
+                    redraw = true;
+                }
+            }
+            if stop {
+                listener = None;
+            }
+            background.set_excitement(excitement);
+            // Follow the beat with shorter frames, and go back to idle pacing in silence.
+            let busy =
+                excitement.level > 0.02 || excitement.pulse > 0.02 || excitement.activity > 0.02;
+            if busy != lively {
+                lively = busy;
+                speed.set_interval(
+                    if busy { LIVELY_FRAME } else { CALM_FRAME },
+                    &mut background,
+                )?;
+            }
             redraw |= background.update(now);
             if redraw {
                 terminal.draw(|frame| {
@@ -647,6 +869,10 @@ fn run() -> io::Result<()> {
                             draw_prompt(frame, row, &prompt);
                         }
                     }
+                    if let Some(notice) = &notice {
+                        let row = Rect::new(area.x, area.y, area.width, 1);
+                        draw_caption(frame.buffer_mut(), row, &notice.text);
+                    }
                 })?;
                 redraw = false;
             }
@@ -659,6 +885,11 @@ fn run() -> io::Result<()> {
                 // A pending request has to be polled even while paused.
                 (generator.is_pending() || ambient.is_pending())
                     .then_some(Duration::from_millis(25)),
+                // Opening a device can take a moment, and silence is judged by the clock.
+                listener.is_some().then_some(Duration::from_millis(50)),
+                notice
+                    .as_ref()
+                    .map(|notice| notice.until.saturating_duration_since(Instant::now())),
             ]
             .into_iter()
             .flatten()
@@ -704,6 +935,27 @@ fn run() -> io::Result<()> {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                             KeyCode::Char('t' | 'T') => prompt.begin(),
+                            KeyCode::Char('a' | 'A') => {
+                                let now = Instant::now();
+                                let (text, started) = if listener.is_some() {
+                                    ("Audio off".to_string(), None)
+                                } else {
+                                    match Listener::start(
+                                        options.source.clone(),
+                                        options.sensitivity,
+                                    ) {
+                                        Ok(started) => {
+                                            ("Opening audio...".to_string(), Some(started))
+                                        }
+                                        Err(message) => (format!("Audio: {message}"), None),
+                                    }
+                                };
+                                listener = started;
+                                notice = Some(Notice {
+                                    text,
+                                    until: now + NOTICE,
+                                });
+                            }
                             KeyCode::Up | KeyCode::Down => {
                                 let step = if key.code == KeyCode::Up { 1 } else { -1 };
                                 speed.change(step, &mut background)?;
@@ -1283,21 +1535,89 @@ mod tests {
     #[test]
     fn the_command_line_picks_the_place_to_describe() {
         let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
-        assert_eq!(parse(&[]), Ok(Command::Clock(Some(Place::Here))));
-        assert_eq!(parse(&["--no-weather"]), Ok(Command::Clock(None)));
+        let at = |place| {
+            Ok(Command::Clock(Options {
+                place,
+                ..Options::default()
+            }))
+        };
+        assert_eq!(parse(&[]), at(Some(Place::Here)));
+        assert_eq!(parse(&["--no-weather"]), at(None));
         assert_eq!(parse(&["--alarm-test"]), Ok(Command::AlarmTest));
-        let lisbon = Ok(Command::Clock(Some(Place::Named("Lisbon".into()))));
+        let lisbon = at(Some(Place::Named("Lisbon".into())));
         assert_eq!(parse(&["--location", "Lisbon"]), lisbon);
         assert_eq!(parse(&["--location=Lisbon"]), lisbon);
         // The last choice wins.
-        assert_eq!(
-            parse(&["--location", "Lisbon", "--no-weather"]),
-            Ok(Command::Clock(None))
-        );
+        assert_eq!(parse(&["--location", "Lisbon", "--no-weather"]), at(None));
         assert!(parse(&["--location"]).is_err());
         assert!(parse(&["--location", " "]).is_err());
         assert!(parse(&["--location="]).is_err());
         assert!(parse(&["--bogus"]).unwrap_err().contains("--bogus"));
+    }
+
+    #[test]
+    fn energy_sets_how_hard_sound_warps_and_steers_but_not_how_fast_it_speeds_up() {
+        let normal = Reactivity::default();
+        let calm = reactivity_for(0.0);
+        let wild = reactivity_for(4.0);
+        assert!((calm.warp - 0.6 * normal.warp).abs() < 1e-6);
+        assert!((calm.steer - 0.6 * normal.steer).abs() < 1e-6);
+        assert!((wild.warp - 1.2 * normal.warp).abs() < 1e-6);
+        assert!((wild.steer - 1.2 * normal.steer).abs() < 1e-6);
+        for scaled in [calm, wild] {
+            assert_eq!(
+                (scaled.speed, scaled.kick, scaled.busy),
+                (normal.speed, normal.kick, normal.busy)
+            );
+        }
+        // Out-of-range scores are held to the ends.
+        assert_eq!(reactivity_for(9.0), wild);
+        assert_eq!(reactivity_for(-3.0), calm);
+    }
+
+    #[test]
+    fn the_command_line_picks_what_to_listen_to() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        let listening = |source, sensitivity| {
+            Ok(Command::Clock(Options {
+                listen: true,
+                source,
+                sensitivity,
+                ..Options::default()
+            }))
+        };
+        // Sound is off unless asked for.
+        assert_eq!(
+            parse(&["--sensitivity", "2"]),
+            Ok(Command::Clock(Options {
+                sensitivity: 2.0,
+                ..Options::default()
+            }))
+        );
+        assert_eq!(parse(&["--audio"]), listening(Source::System, 1.0));
+        assert_eq!(
+            parse(&["--audio-from", "mic"]),
+            listening(Source::Microphone, 1.0)
+        );
+        assert_eq!(
+            parse(&["--audio-from=system"]),
+            listening(Source::System, 1.0)
+        );
+        assert_eq!(
+            parse(&["--audio-from", "BlackHole", "--sensitivity=0.5"]),
+            listening(Source::Named("BlackHole".into()), 0.5)
+        );
+        assert_eq!(parse(&["--list-audio"]), Ok(Command::ListAudio));
+        for bad in [
+            &["--audio-from"][..],
+            &["--sensitivity", "loud"],
+            &["--sensitivity", "0"],
+            &["--sensitivity=-1"],
+            &["--sensitivity", "NaN"],
+            &["--audio=on"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

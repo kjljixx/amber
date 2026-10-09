@@ -5,6 +5,7 @@
 //! into any rectangle. Draw other widgets afterward to put them on top.
 pub mod ambient;
 mod animation;
+pub mod audio;
 mod color;
 mod digits;
 #[cfg(feature = "generation")]
@@ -25,5 +26,5 @@ pub use half_blocks::{HalfBlocks, Preview};
 pub use overlay::blend_samples;
 pub use recipe::{CompiledRecipe, MotionStyle, Recipe};
 pub use scene::Scene;
-pub use view::{GradientView, Playback, RenderStats};
+pub use view::{Excitement, GradientView, Playback, Reactivity, RenderStats};
 pub use warp::{FoldWave, LayerAnimation, LayerMotion, WarpAxis, WarpLayer};

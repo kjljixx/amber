@@ -6,6 +6,7 @@ default-run = "amber"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+cpal = { version = "0.18", optional = true }
 crossterm = "0.29"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
@@ -14,8 +15,9 @@ unicode-width = "0.2"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "json"], optional = true }
 
 [features]
-default = ["generation"]
+default = ["generation", "audio"]
 generation = ["dep:ureq"]
+audio = ["dep:cpal"]
 
 [[bin]]
 name = "jev"

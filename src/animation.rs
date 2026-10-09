@@ -13,6 +13,9 @@ pub struct Animation {
     next_frame: Instant,
     interval: Duration,
     speed: f64,
+    /// Radians per second added to `speed` for as long as something (audio) is
+    /// exciting the view.
+    boost: f64,
 }
 
 impl Animation {
@@ -25,6 +28,7 @@ impl Animation {
             next_frame: now + FRAME_INTERVAL,
             interval: FRAME_INTERVAL,
             speed: PHASE_PER_SECOND,
+            boost: 0.0,
         }
     }
 
@@ -55,6 +59,23 @@ impl Animation {
         Ok(())
     }
 
+    /// Takes effect from the next tick; time already elapsed keeps the old boost.
+    pub fn set_boost(&mut self, radians_per_second: f64) {
+        self.boost = if radians_per_second.is_finite() {
+            radians_per_second.max(0.0)
+        } else {
+            0.0
+        };
+    }
+
+    /// Moves the picture by `radians` at once, backward if negative.
+    pub fn nudge(&mut self, radians: f64) {
+        if radians.is_finite() {
+            self.travel += radians;
+            self.phase = (self.phase + radians).rem_euclid(std::f64::consts::TAU);
+        }
+    }
+
     pub fn set_running(&mut self, running: bool, now: Instant) {
         if running != self.running {
             self.running = running;
@@ -69,10 +90,11 @@ impl Animation {
             return false;
         }
         let elapsed = now.duration_since(self.last_frame).as_secs_f64();
-        self.travel += elapsed * self.speed;
+        let speed = self.speed + self.boost;
+        self.travel += elapsed * speed;
         // Reduce elapsed time first so large finite speeds cannot overflow.
-        let advance = if self.speed > 0.0 {
-            (elapsed % (std::f64::consts::TAU / self.speed)) * self.speed
+        let advance = if speed > 0.0 {
+            (elapsed % (std::f64::consts::TAU / speed)) * speed
         } else {
             0.0
         };
@@ -106,6 +128,34 @@ mod tests {
         animation.set_running(true, start + Duration::from_secs(100));
         animation.tick(start + Duration::from_secs(101));
         assert_eq!(animation.travel(), 63.0);
+    }
+
+    #[test]
+    fn a_boost_adds_to_the_speed_from_the_next_tick() {
+        let start = Instant::now();
+        let mut animation = Animation::new(start);
+        animation.set_boost(6.0);
+        animation.tick(start + Duration::from_secs(1));
+        assert_eq!(animation.travel(), 9.0);
+        animation.set_boost(0.0);
+        animation.tick(start + Duration::from_secs(2));
+        assert_eq!(animation.travel(), 12.0);
+        animation.set_boost(f64::NAN);
+        animation.tick(start + Duration::from_secs(3));
+        assert_eq!(animation.travel(), 15.0);
+    }
+
+    #[test]
+    fn a_nudge_moves_both_ways_without_leaving_the_cycle() {
+        let start = Instant::now();
+        let mut animation = Animation::new(start);
+        animation.nudge(1.0);
+        assert_eq!((animation.travel(), animation.phase()), (1.0, 1.0));
+        animation.nudge(-2.0);
+        assert_eq!(animation.travel(), -1.0);
+        assert!((animation.phase() - (std::f32::consts::TAU - 1.0)).abs() < 1e-5);
+        animation.nudge(f64::NAN);
+        assert_eq!(animation.travel(), -1.0);
     }
 
     #[test]
