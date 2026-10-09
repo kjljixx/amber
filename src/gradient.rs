@@ -1,5 +1,7 @@
 use crate::color::{Oklab, Rgb, oklab_to_rgb, rgb_to_oklab};
 use crate::warp::Warp;
+#[cfg(test)]
+use crate::warp::WarpStack;
 
 const MAX_POINTS: usize = 256;
 const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.05..=10.0;
@@ -544,10 +546,10 @@ mod tests {
         let plain = gradient.prepare(1.0);
         let disabled = gradient
             .prepare(1.0)
-            .with_warp(Warp::new(0.0, 0.0, 58).unwrap());
+            .with_warp(WarpStack::new(0.0, 0.0, 58, &[]).unwrap().at_rest(1.0));
         let warped = gradient
             .prepare(1.0)
-            .with_warp(Warp::new(1.0, 0.45, 58).unwrap());
+            .with_warp(WarpStack::new(1.0, 0.45, 58, &[]).unwrap().at_rest(1.0));
         let mut changed = 0;
         for row in 0..10 {
             for column in 0..10 {

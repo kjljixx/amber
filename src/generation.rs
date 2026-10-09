@@ -474,6 +474,7 @@ impl Design {
                     crate::MotionStyle::Wander
                 }
             },
+            warp: Vec::new(),
         };
         recipe.compile().map_err(str::to_string)?;
         Ok(recipe)

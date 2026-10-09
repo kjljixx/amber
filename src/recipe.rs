@@ -1,6 +1,6 @@
 use crate::{
     gradient::{Gradient, Point, PreparedGradient},
-    warp::Warp,
+    warp::{Clock, LayerMotion, Warp, WarpLayer, WarpStack},
 };
 
 /// Motion independent of the color layout. Older JSON recipes keep looping.
@@ -25,12 +25,16 @@ pub struct Recipe {
     pub motion: f32,
     #[serde(default)]
     pub motion_style: MotionStyle,
+    /// Extra warp layers, applied after the classic `distortion` and `swirl`
+    /// layers. Set both of those to 0 to use only these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warp: Vec<WarpLayer>,
 }
 
 /// Validated settings with color conversions and seeded warp setup cached.
 pub struct CompiledRecipe {
     gradient: Gradient,
-    warp: Warp,
+    warp: WarpStack,
     motion: f32,
     motion_style: MotionStyle,
 }
@@ -65,7 +69,7 @@ impl Recipe {
         }
         Ok(CompiledRecipe {
             gradient: Gradient::new(&self.points, self.softness)?,
-            warp: Warp::new(self.distortion, self.swirl, self.seed)?,
+            warp: WarpStack::new(self.distortion, self.swirl, self.seed, &self.warp)?,
             motion: self.motion,
             motion_style: self.motion_style,
         })
@@ -99,12 +103,19 @@ impl CompiledRecipe {
             MotionStyle::Flow => field,
             MotionStyle::Wander => field.with_wander(travel, motion, self.warp.seed()),
         };
-        field.with_warp(if !warped {
-            Warp::default()
-        } else if self.motion_style == MotionStyle::Loop {
-            self.warp.at_time(phase)
+        field.with_warp(if warped {
+            self.warp.at(&Clock {
+                phase,
+                travel,
+                motion,
+                aspect,
+                inherited: match self.motion_style {
+                    MotionStyle::Loop => LayerMotion::Cycle,
+                    MotionStyle::Flow | MotionStyle::Wander => LayerMotion::Drift,
+                },
+            })
         } else {
-            self.warp.at_flow(phase, travel, motion)
+            Warp::default()
         })
     }
 }
@@ -232,7 +243,7 @@ mod tests {
             let recipe = preset.recipe;
             let compiled = recipe.compile().unwrap();
             let gradient = Gradient::new(&recipe.points, recipe.softness).unwrap();
-            let warp = Warp::new(recipe.distortion, recipe.swirl, recipe.seed).unwrap();
+            let warp = WarpStack::new(recipe.distortion, recipe.swirl, recipe.seed, &[]).unwrap();
             for aspect in [0.5, 1.0, 2.0] {
                 for phase in [0.0, 1.2] {
                     for warped in [false, true] {
@@ -242,7 +253,13 @@ mod tests {
                                 .prepare(aspect)
                                 .with_drift(phase, if drifting { 0.5 } else { 0.0 })
                                 .with_warp(if warped {
-                                    warp.at_time(phase)
+                                    warp.at(&Clock {
+                                        phase,
+                                        travel: 0.0,
+                                        motion: 0.0,
+                                        aspect,
+                                        inherited: LayerMotion::Cycle,
+                                    })
                                 } else {
                                     Warp::default()
                                 });
@@ -256,6 +273,84 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn warp_layers_load_from_json_and_change_the_render() {
+        let mut value: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+        assert!(value.get("warp").is_none());
+        let plain: Recipe = serde_json::from_value(value.clone()).unwrap();
+        assert!(plain.warp.is_empty());
+        // Unset layers stay out of serialized recipes.
+        assert!(serde_json::to_value(&plain).unwrap().get("warp").is_none());
+
+        value["warp"] = serde_json::json!([
+            {"type": "tilt", "angle": 15},
+            {"type": "ripple", "amplitude": 0.04, "frequency": 14, "decay": 3,
+             "animation": {"mode": "drift", "speed": 2}}
+        ]);
+        let layered: Recipe = serde_json::from_value(value).unwrap();
+        assert_eq!(layered.warp.len(), 2);
+        let round_trip: Recipe =
+            serde_json::from_value(serde_json::to_value(&layered).unwrap()).unwrap();
+        assert_eq!(round_trip.warp, layered.warp);
+
+        let sample = |recipe: &Recipe| {
+            let field = recipe
+                .compile()
+                .unwrap()
+                .prepare_at(1.0, 0.0, 0.0, true, false);
+            (0..64)
+                .map(|i| field.sample((i % 8) as f32 / 7.0, (i / 8) as f32 / 7.0))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(sample(&plain), sample(&layered));
+        // Turning the warp off disables the layers along with the classic stack.
+        let off = |recipe: &Recipe| {
+            let field = recipe
+                .compile()
+                .unwrap()
+                .prepare_at(1.0, 0.0, 0.0, false, false);
+            field.sample(0.3, 0.6)
+        };
+        assert_eq!(off(&plain), off(&layered));
+    }
+
+    #[test]
+    fn bundled_example_recipes_load() {
+        let mut found = 0;
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/examples")).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                Recipe::load(&path).unwrap();
+                found += 1;
+            }
+        }
+        assert!(found >= 3, "expected the bundled examples, found {found}");
+    }
+
+    #[test]
+    fn invalid_warp_layers_are_rejected_before_rendering() {
+        let mut value: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+        for bad in [
+            serde_json::json!([{"type": "tilt", "angle": 400}]),
+            serde_json::json!([{"type": "noise", "strength": 3}]),
+        ] {
+            value["warp"] = bad;
+            let recipe: Recipe = serde_json::from_value(value.clone()).unwrap();
+            assert!(recipe.compile().is_err());
+        }
+        for malformed in [
+            serde_json::json!([{"type": "tilt"}]),
+            serde_json::json!([{"type": "spin", "angle": 3}]),
+            serde_json::json!({"type": "tilt", "angle": 3}),
+        ] {
+            value["warp"] = malformed;
+            assert!(serde_json::from_value::<Recipe>(value.clone()).is_err());
         }
     }
 

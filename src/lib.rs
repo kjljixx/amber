@@ -19,3 +19,4 @@ pub use gradient::{Point, PreparedGradient};
 pub use half_blocks::{HalfBlocks, Preview};
 pub use recipe::{CompiledRecipe, MotionStyle, Recipe};
 pub use view::{GradientView, Playback, RenderStats};
+pub use warp::{FoldWave, LayerAnimation, LayerMotion, WarpAxis, WarpLayer};

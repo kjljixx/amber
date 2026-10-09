@@ -43,6 +43,7 @@ pub fn presets() -> [Preset; 2] {
                 seed: 58,
                 motion: 0.5,
                 motion_style: crate::MotionStyle::Loop,
+                warp: Vec::new(),
             },
         },
         Preset {
@@ -55,6 +56,7 @@ pub fn presets() -> [Preset; 2] {
                 seed: 58,
                 motion: 0.5,
                 motion_style: crate::MotionStyle::Loop,
+                warp: Vec::new(),
             },
         },
     ]

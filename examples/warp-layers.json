@@ -1,0 +1,22 @@
+{
+  "points": [
+    {"position": [0.12, 0.62], "color": [22, 18, 30], "radius": 0.12, "stretch": 0.1},
+    {"position": [0.3, 0.62], "color": [22, 18, 30], "radius": 0.12, "stretch": 0.1},
+    {"position": [0.5, 0.62], "color": [22, 18, 30], "radius": 0.12, "stretch": 0.1},
+    {"position": [0.7, 0.62], "color": [22, 18, 30], "radius": 0.12, "stretch": 0.1},
+    {"position": [0.88, 0.62], "color": [22, 18, 30], "radius": 0.12, "stretch": 0.1},
+    {"position": [0.5, 0.1], "color": [34, 70, 60]},
+    {"position": [0.5, 0.55], "color": [214, 172, 92], "radius": 1.0, "stretch": 4.0},
+    {"position": [0.5, 0.98], "color": [44, 34, 28], "stretch": 4.0}
+  ],
+  "softness": 0.4,
+  "distortion": 0.0,
+  "swirl": 0.0,
+  "seed": 58,
+  "motion": 0.5,
+  "motion_style": "wander",
+  "warp": [
+    {"type": "folds", "displace": "x", "amplitude": 1.0, "waves": [{"amplitude": 0.035, "frequency": 3.0}, {"amplitude": 0.015, "frequency": 7.0, "speed": -1}]},
+    {"type": "noise", "strength": 0.25, "frequency": [1.0, 0.35], "weight": [1.0, 0.25]}
+  ]
+}
