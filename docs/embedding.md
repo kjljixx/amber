@@ -60,8 +60,51 @@ The host measures total frame time, including its own widgets and terminal outpu
 Render the gradient first and other widgets afterward. Solid panels should clear
 their rectangle and set an explicit background color. Text that only changes
 foreground color inherits the bottom half's background, but replaces the
-half-block character, losing the cell's two-color split. Alpha blending is not
-provided by the terminal or this API.
+half-block character, losing the cell's two-color split. The terminal has no
+alpha blending, so ordinary widgets cannot be translucent; `Digits` (below)
+blends into the half-block colors itself.
+
+## Big digits
+
+`Digits` is a separate widget with no link to the gradient code. Render it after
+the gradient, into the same rectangle:
+
+```rust
+let mut digits = Digits::new("25:49", [255, 255, 255], 0.85)?;
+
+terminal.draw(|frame| {
+    gradient.render(frame, area);
+    frame.render_widget(&mut digits, area);
+})?;
+```
+
+It reads the two colors already in each `▀` cell and blends the digits over
+them, so they have the gradient's full vertical resolution and real
+translucency: `alpha` 1 is opaque, lower lets what is underneath show through
+(blended in OKLab, so its hue is kept). Cells that are not colored half blocks
+are left alone. Render it once per frame, after the content it covers; drawing
+it twice would blend twice. It works over any half-block content, not only
+`GradientView`.
+
+Text may use `0` to `9`, `:`, `.`, `-` and spaces, with `\n` for several lines.
+Each pixel of the 5 by 9 digit font becomes an `n` by `n` square of samples,
+where `n` is the largest whole number that fits the area with a 10% margin, and
+the text is centered. Strokes are therefore all the same width and edges are
+hard, but the size moves in steps (`n` 2 to 3 is a 50% jump) and the text
+rarely fills the full width. If even `n = 1` does not fit, nothing is drawn: at
+`n = 1` a digit is 5 samples wide and 9 tall, so "25:49" needs about 32 columns
+and 6 terminal rows once the margin is counted. Every digit fills the same box and has the
+same width, so a clock does not shift as it changes.
+
+The coverage is computed once per area size, so animation costs only the blend
+over covered samples. Pick a color with contrast against the whole gradient:
+pale text fades over light regions. To change the text, build a new `Digits`.
+
+The shapes are the `glyph()` table in `src/digits.rs`. `tools/digit-editor.html`
+is a standalone browser editor for them, with a live preview and an export in
+the same form.
+
+Run `cargo run --offline --example digits -- 25:47 0.85` to try it.
 
 Run `cargo run --offline --example background` for a complete host application
 with a solid panel over the gradient. Space pauses; `q` exits.

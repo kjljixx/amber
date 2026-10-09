@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Amber digit editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#14161d; --panel:#1d2029; --line:#323746; --text:#e6e8ee; --dim:#8b91a3; --accent:#ffb347; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header span { color:var(--dim); }
+  main { display:grid; grid-template-columns: minmax(300px, 420px) 1fr; gap:16px; padding:16px 20px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:16px; }
+  section h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); margin:0 0 10px; font-weight:600; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .row label { color:var(--dim); }
+  button { background:#2a2e3b; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:#5a6178; }
+  button.primary { background:var(--accent); color:#1a1200; border-color:var(--accent); font-weight:600; }
+  input[type=text], textarea, select { background:#10121a; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  textarea { width:100%; font:12px/1.35 ui-monospace, Menlo, monospace; resize:vertical; }
+  input[type=number] { width:60px; background:#10121a; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 6px; font:inherit; }
+  #palette { display:flex; flex-wrap:wrap; gap:6px; }
+  .swatch { position:relative; background:#10121a; border:2px solid transparent; border-radius:8px; padding:6px; cursor:pointer; text-align:center; }
+  .swatch.sel { border-color:var(--accent); }
+  .swatch canvas { display:block; image-rendering:pixelated; }
+  .swatch small { display:block; color:var(--dim); font-size:11px; margin-top:2px; }
+  .swatch .warn { position:absolute; top:2px; right:4px; color:#ff8a65; font-size:12px; }
+  #editor { display:block; touch-action:none; cursor:crosshair; border-radius:6px; }
+  #previewWrap { overflow:auto; max-height:70vh; }
+  #preview { display:block; image-rendering:pixelated; border-radius:8px; border:1px solid var(--line); }
+  .hint { color:var(--dim); font-size:12px; }
+  .status { font-size:12px; margin-top:6px; }
+  .status.ok { color:#7bd88f; } .status.bad { color:#ff8a65; }
+  input[type=range] { width:140px; }
+  .val { display:inline-block; min-width:2ch; text-align:right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Amber digit editor</h1>
+  <span>Click or drag to paint; right-click or Shift+drag to erase. Changes save in this browser.</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Glyphs</h2>
+      <div id="palette"></div>
+      <div class="hint" style="margin-top:8px">⚠ on a digit: its ink does not touch all four sides of the box (the Rust tests require that, so no digit looks smaller than another).</div>
+    </section>
+    <section>
+      <h2>Edit <span id="editName"></span></h2>
+      <canvas id="editor"></canvas>
+      <div class="row">
+        <button data-act="clear">Clear</button>
+        <button data-act="invert">Invert</button>
+        <button data-act="flipH">Flip ↔</button>
+        <button data-act="flipV">Flip ↕</button>
+        <button data-act="left">←</button>
+        <button data-act="right">→</button>
+        <button data-act="up">↑</button>
+        <button data-act="down">↓</button>
+      </div>
+      <div class="row">
+        <label>Width</label>
+        <button data-act="narrower">−</button><span class="val" id="wVal"></span><button data-act="wider">+</button>
+        <label style="margin-left:12px">Height (all glyphs)</label>
+        <button data-act="shorter">−</button><span class="val" id="hVal"></span><button data-act="taller">+</button>
+      </div>
+      <div class="row">
+        <label>Copy from</label><select id="copyFrom"></select>
+        <button data-act="copy">Copy</button>
+        <button data-act="resetGlyph">Reset this glyph</button>
+        <button data-act="resetAll">Reset all</button>
+      </div>
+      <div class="status" id="boxStatus"></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Preview</h2>
+      <div class="row">
+        <label>Text</label>
+        <textarea id="text" rows="2" style="width:220px">23:58</textarea>
+        <label>Gap</label><input type="number" id="gap" min="0" max="4" value="1">
+      </div>
+      <div class="row">
+        <label>Samples per font pixel (n)</label>
+        <input type="range" id="n" min="1" max="8" value="3"><span class="val" id="nVal">3</span>
+        <label style="margin-left:12px">Zoom</label>
+        <input type="range" id="zoom" min="1" max="12" value="5"><span class="val" id="zoomVal">5</span>
+      </div>
+      <div class="row">
+        <label>Color</label><input type="color" id="color" value="#ffffff">
+        <label>Alpha</label><input type="range" id="alpha" min="0" max="100" value="90"><span class="val" id="alphaVal">0.90</span>
+        <label>Background</label>
+        <select id="bg">
+          <option value="gradient">Amber-style gradient</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="grey">Grey</option>
+        </select>
+        <label><input type="checkbox" id="grid"> pixel grid</label>
+      </div>
+      <div id="previewWrap"><canvas id="preview"></canvas></div>
+      <div class="hint" id="previewInfo" style="margin-top:6px"></div>
+    </section>
+    <section>
+      <h2>Export</h2>
+      <div class="row hint">Paste the ASCII block back to Claude, or use the Rust arms in <code>glyph()</code> in <code>src/digits.rs</code>.</div>
+      <div class="row"><strong>ASCII</strong>
+        <button id="copyAscii" class="primary">Copy</button>
+        <button id="applyAscii">Apply edits from box</button>
+      </div>
+      <textarea id="ascii" rows="14" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:12px"><strong>Rust</strong><button id="copyRust" class="primary">Copy</button></div>
+      <textarea id="rust" rows="14" spellcheck="false" readonly></textarea>
+    </section>
+  </div>
+</main>
+<script>
+// ---- Defaults: the digits as currently in src/digits.rs (5 by 9 font pixels) ----
+const DEFAULT_ASCII = `
+[0]
+.###.
+#...#
+#...#
+#...#
+#...#
+#...#
+#...#
+#...#
+.###.
+
+[1]
+###..
+..#..
+..#..
+..#..
+..#..
+..#..
+..#..
+..#..
+#####
+
+[2]
+.###.
+#...#
+....#
+...##
+..##.
+.##..
+##...
+#....
+#####
+
+[3]
+#####
+....#
+....#
+....#
+.####
+....#
+....#
+....#
+#####
+
+[4]
+#...#
+#...#
+#...#
+#...#
+#####
+....#
+....#
+....#
+....#
+
+[5]
+#####
+#....
+#....
+####.
+....#
+....#
+....#
+#...#
+.###.
+
+[6]
+#####
+#....
+#....
+#....
+#####
+#...#
+#...#
+#...#
+#####
+
+[7]
+#####
+....#
+....#
+...##
+...#.
+..##.
+..#..
+..#..
+..#..
+
+[8]
+.###.
+#...#
+#...#
+#...#
+.###.
+#...#
+#...#
+#...#
+.###.
+
+[9]
+#####
+#...#
+#...#
+#...#
+#####
+....#
+....#
+....#
+#####
+
+[:]
+.
+.
+#
+.
+.
+.
+#
+.
+.
+
+[.]
+.
+.
+.
+.
+.
+.
+.
+.
+#
+
+[-]
+.....
+.....
+.....
+.....
+#####
+.....
+.....
+.....
+.....
+`;
+const ORDER = ['0','1','2','3','4','5','6','7','8','9',':','.','-'];
+const DIGITS = new Set('0123456789'.split(''));
+const SPACE_ADVANCE = 3;
+const STORE = 'amber-digit-editor-v1';
+
+// glyphs[char] = array of rows, each row a string of '#' and '.'
+function parseAscii(src) {
+  const out = {}; let cur = null;
+  for (const raw of src.split('\n')) {
+    const line = raw.trim();
+    const head = line.match(/^\[(.)\]$/);
+    if (head) { cur = head[1]; out[cur] = []; }
+    else if (cur && /^[#.]+$/.test(line)) out[cur].push(line);
+  }
+  return out;
+}
+function normalize(map) {
+  // Make every glyph rectangular and the same height.
+  const h = Math.max(1, ...Object.values(map).map(r => r.length));
+  const res = {};
+  for (const c of Object.keys(map)) {
+    const rows = map[c]; const w = Math.max(1, ...rows.map(r => r.length));
+    res[c] = Array.from({length:h}, (_, y) => (rows[y] || '').padEnd(w, '.').slice(0, w));
+  }
+  return res;
+}
+const DEFAULTS = normalize(parseAscii(DEFAULT_ASCII));
+let glyphs = JSON.parse(JSON.stringify(DEFAULTS));
+try { const saved = JSON.parse(localStorage.getItem(STORE)); if (saved && saved.glyphs) glyphs = normalize(saved.glyphs); } catch (e) {}
+let selected = '2';
+const H = () => glyphs[ORDER[0]].length;
+const widthOf = c => glyphs[c][0].length;
+function save() { try { localStorage.setItem(STORE, JSON.stringify({glyphs})); } catch (e) {} }
+
+// ---- helpers ----
+const $ = id => document.getElementById(id);
+function cell(c, x, y) { return glyphs[c][y][x] === '#'; }
+function setCell(c, x, y, v) {
+  const row = glyphs[c][y].split(''); row[x] = v ? '#' : '.'; glyphs[c][y] = row.join('');
+}
+function bounds(c) {
+  let x0=1e9,y0=1e9,x1=-1,y1=-1;
+  glyphs[c].forEach((row, y) => [...row].forEach((v, x) => { if (v==='#') { x0=Math.min(x0,x); x1=Math.max(x1,x); y0=Math.min(y0,y); y1=Math.max(y1,y);} }));
+  return x1 < 0 ? null : {x0,y0,x1,y1};
+}
+function fillsBox(c) {
+  const b = bounds(c); if (!b) return false;
+  return b.x0 === 0 && b.y0 === 0 && b.x1 === widthOf(c)-1 && b.y1 === H()-1;
+}
+function map(c, fn) { glyphs[c] = fn(glyphs[c].map(r => r.split(''))).map(r => r.join('')); }
+
+// ---- palette ----
+function drawGlyphThumb(canvas, c, px) {
+  const w = widthOf(c), h = H();
+  canvas.width = w*px; canvas.height = h*px;
+  const g = canvas.getContext('2d'); g.clearRect(0,0,canvas.width,canvas.height);
+  g.fillStyle = '#fff';
+  for (let y=0;y<h;y++) for (let x=0;x<w;x++) if (cell(c,x,y)) g.fillRect(x*px,y*px,px,px);
+}
+function renderPalette() {
+  const pal = $('palette'); pal.innerHTML = '';
+  for (const c of ORDER) {
+    const d = document.createElement('div'); d.className = 'swatch' + (c===selected ? ' sel' : '');
+    const cv = document.createElement('canvas'); drawGlyphThumb(cv, c, 4);
+    d.appendChild(cv);
+    const s = document.createElement('small'); s.textContent = c; d.appendChild(s);
+    if (DIGITS.has(c) && !fillsBox(c)) { const w = document.createElement('span'); w.className='warn'; w.textContent='⚠'; d.appendChild(w); }
+    d.onclick = () => { selected = c; renderAll(); };
+    pal.appendChild(d);
+  }
+  const sel = $('copyFrom'); sel.innerHTML = ORDER.map(c => `<option>${c}</option>`).join('');
+}
+
+// ---- editor ----
+const ed = $('editor'); const CELL = 34;
+function renderEditor() {
+  const w = widthOf(selected), h = H();
+  ed.width = w*CELL+1; ed.height = h*CELL+1;
+  const g = ed.getContext('2d');
+  g.fillStyle = '#10121a'; g.fillRect(0,0,ed.width,ed.height);
+  for (let y=0;y<h;y++) for (let x=0;x<w;x++) {
+    g.fillStyle = cell(selected,x,y) ? '#ffffff' : '#171a24';
+    g.fillRect(x*CELL+1,y*CELL+1,CELL-1,CELL-1);
+  }
+  // guide: the middle row, which most bars sit on
+  g.strokeStyle = 'rgba(255,179,71,.35)'; g.lineWidth = 1;
+  g.strokeRect(0.5, Math.floor(h/2)*CELL+0.5, w*CELL, CELL);
+  $('editName').textContent = `“${selected}”  (${w} × ${h})`;
+  $('wVal').textContent = w; $('hVal').textContent = h;
+  const st = $('boxStatus');
+  if (!DIGITS.has(selected)) { st.textContent = ''; st.className = 'status'; }
+  else if (fillsBox(selected)) { st.textContent = '✓ touches all four sides of the box'; st.className = 'status ok'; }
+  else { st.textContent = '⚠ does not touch all four sides of the box (the Rust test "every digit fills the same box" will fail)'; st.className = 'status bad'; }
+}
+let painting = null; // the value being painted, or null
+function pos(e) {
+  const r = ed.getBoundingClientRect();
+  return [Math.floor((e.clientX - r.left) * ed.width / r.width / CELL), Math.floor((e.clientY - r.top) * ed.height / r.height / CELL)];
+}
+function paint(e) {
+  const [x,y] = pos(e); if (x<0||y<0||x>=widthOf(selected)||y>=H()) return;
+  if (cell(selected,x,y) !== painting) { setCell(selected,x,y,painting); changed(); }
+}
+ed.addEventListener('contextmenu', e => e.preventDefault());
+ed.addEventListener('pointerdown', e => {
+  ed.setPointerCapture(e.pointerId);
+  const [x,y] = pos(e); if (x<0||y<0||x>=widthOf(selected)||y>=H()) return;
+  painting = (e.button === 2 || e.shiftKey) ? false : !cell(selected,x,y);
+  paint(e);
+});
+ed.addEventListener('pointermove', e => { if (painting !== null) paint(e); });
+ed.addEventListener('pointerup', () => painting = null);
+
+const actions = {
+  clear: () => map(selected, g => g.map(r => r.map(() => '.'))),
+  invert: () => map(selected, g => g.map(r => r.map(v => v==='#' ? '.' : '#'))),
+  flipH: () => map(selected, g => g.map(r => r.reverse())),
+  flipV: () => map(selected, g => g.reverse()),
+  left: () => map(selected, g => g.map(r => [...r.slice(1), '.'])),
+  right: () => map(selected, g => g.map(r => ['.', ...r.slice(0,-1)])),
+  up: () => map(selected, g => [...g.slice(1), g[0].map(() => '.')]),
+  down: () => map(selected, g => [g[0].map(() => '.'), ...g.slice(0,-1)]),
+  wider: () => map(selected, g => g.map(r => [...r, '.'])),
+  narrower: () => { if (widthOf(selected) > 1) map(selected, g => g.map(r => r.slice(0,-1))); },
+  taller: () => { for (const c of ORDER) glyphs[c].push('.'.repeat(widthOf(c))); },
+  shorter: () => { if (H() > 3) for (const c of ORDER) glyphs[c].pop(); },
+  copy: () => { const from = $('copyFrom').value; glyphs[selected] = [...glyphs[from]]; },
+  resetGlyph: () => { glyphs[selected] = [...DEFAULTS[selected]]; },
+  resetAll: () => { if (confirm('Reset every glyph to the digits currently in src/digits.rs?')) glyphs = JSON.parse(JSON.stringify(DEFAULTS)); },
+};
+document.querySelectorAll('[data-act]').forEach(b => b.onclick = () => { actions[b.dataset.act](); changed(); });
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea, select')) return;
+  const k = e.key; if (ORDER.includes(k)) { selected = k; renderAll(); }
+  else if (e.key === 'ArrowLeft') { actions.left(); changed(); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { actions.right(); changed(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { actions.up(); changed(); e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { actions.down(); changed(); e.preventDefault(); }
+});
+
+// ---- preview ----
+function drawBackground(g, w, h, kind) {
+  if (kind === 'dark') { g.fillStyle = '#10131c'; g.fillRect(0,0,w,h); return; }
+  if (kind === 'light') { g.fillStyle = '#f2e6d4'; g.fillRect(0,0,w,h); return; }
+  if (kind === 'grey') { g.fillStyle = '#7a7f8c'; g.fillRect(0,0,w,h); return; }
+  g.fillStyle = '#4a8fe0'; g.fillRect(0,0,w,h);
+  const blobs = [[.05,.05,'#0a55d0',.8],[.8,.1,'#12b5ee',.8],[.05,.55,'#f59a35',.75],[.7,.62,'#e8d27a',.7],[.45,.95,'#ff80b0',.7],[.95,.9,'#f0c8a0',.8],[.35,.35,'#8a73b5',.5]];
+  for (const [bx,by,col,r] of blobs) {
+    const gr = g.createRadialGradient(bx*w, by*h, 0, bx*w, by*h, r*Math.max(w,h)*0.6);
+    gr.addColorStop(0, col); gr.addColorStop(1, col + '00');
+    g.fillStyle = gr; g.fillRect(0,0,w,h);
+  }
+}
+function advanceOf(c) { return c === ' ' ? SPACE_ADVANCE : widthOf(c) + (+$('gap').value); }
+function renderPreview() {
+  const n = +$('n').value, zoom = +$('zoom').value, gap = +$('gap').value;
+  $('nVal').textContent = n; $('zoomVal').textContent = zoom;
+  const alpha = +$('alpha').value / 100; $('alphaVal').textContent = alpha.toFixed(2);
+  const lines = $('text').value.split('\n');
+  const unknown = new Set();
+  const lineW = l => Math.max(0, [...l].reduce((s, ch) => s + (glyphs[ch] || ch === ' ' ? advanceOf(ch) : 0), 0) - gap);
+  const pitch = H() + 3;
+  const wPx = Math.max(1, ...lines.map(lineW));
+  const hPx = (lines.length - 1) * pitch + H();
+  const marginX = 5, marginY = 4;   // font pixels
+  const sw = (wPx + 2*marginX) * n, sh = (hPx + 2*marginY) * n;  // in samples
+  const cv = $('preview'); cv.width = sw*zoom; cv.height = sh*zoom;
+  const g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
+  drawBackground(g, cv.width, cv.height, $('bg').value);
+  // opaque mask, then composite once with alpha (overlapping strokes must not double up)
+  const mask = document.createElement('canvas'); mask.width = cv.width; mask.height = cv.height;
+  const m = mask.getContext('2d'); m.fillStyle = $('color').value;
+  lines.forEach((line, li) => {
+    let pen = marginX + (wPx - lineW(line)) / 2;
+    const top = marginY + li * pitch;
+    for (const ch of line) {
+      if (ch === ' ') { pen += SPACE_ADVANCE; continue; }
+      if (!glyphs[ch]) { unknown.add(ch); continue; }
+      const ox = Math.round(pen * n);
+      glyphs[ch].forEach((row, y) => [...row].forEach((v, x) => {
+        if (v === '#') m.fillRect((ox + x*n) * zoom, (top + y) * n * zoom, n*zoom, n*zoom);
+      }));
+      pen += advanceOf(ch);
+    }
+  });
+  g.globalAlpha = alpha; g.drawImage(mask, 0, 0); g.globalAlpha = 1;
+  if ($('grid').checked) {
+    g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 1; g.beginPath();
+    for (let x=0; x<=sw; x+=n) { g.moveTo(x*zoom+.5, 0); g.lineTo(x*zoom+.5, cv.height); }
+    for (let y=0; y<=sh; y+=n) { g.moveTo(0, y*zoom+.5); g.lineTo(cv.width, y*zoom+.5); }
+    g.stroke();
+  }
+  $('previewInfo').textContent =
+    `${wPx} × ${hPx} font pixels = ${wPx*n} × ${hPx*n} samples at n = ${n} (a ${Math.ceil(wPx*n)}-column, ${Math.ceil(hPx*n/2)}-row terminal area, since a cell is 1 × 2 samples).` +
+    (unknown.size ? `  Not in the font: ${[...unknown].map(c => '“'+c+'”').join(' ')}` : '');
+}
+
+// ---- export ----
+function asciiOut() {
+  return ORDER.map(c => `[${c}]\n${glyphs[c].join('\n')}`).join('\n\n') + '\n';
+}
+function rectsOf(rows) {
+  const out = []; let open = new Map(); // "x0,x1" -> y0
+  const h = rows.length;
+  for (let y = 0; y <= h; y++) {
+    const runs = new Set();
+    if (y < h) { const r = rows[y]; let x = 0;
+      while (x < r.length) { if (r[x]==='#') { let e = x; while (e < r.length && r[e]==='#') e++; runs.add(x+','+e); x = e; } else x++; } }
+    for (const [k, y0] of open) if (!runs.has(k)) { const [x0,x1] = k.split(',').map(Number); out.push([x0,y0,x1,y]); open.delete(k); }
+    for (const k of runs) if (!open.has(k)) open.set(k, y);
+  }
+  return out.sort((a,b) => a[1]-b[1] || a[0]-b[0]);
+}
+function rustOut() {
+  const w = widthOf('0'), h = H();
+  let s = `// DIGIT_WIDTH = ${w}, DIGIT_HEIGHT = ${h}; rectangles are [left, top, right, bottom] in font pixels.\n`;
+  for (const c of ORDER) {
+    const r = rectsOf(glyphs[c]).map(a => `[${a.join(', ')}]`).join(', ');
+    s += `'${c}' => &[${r}],\n`;
+  }
+  s += `// widths: ${ORDER.map(c => c + '=' + widthOf(c)).join(', ')}\n`;
+  return s;
+}
+function refreshExport() {
+  if (document.activeElement !== $('ascii')) $('ascii').value = asciiOut();
+  $('rust').value = rustOut();
+}
+$('applyAscii').onclick = () => {
+  const parsed = parseAscii($('ascii').value);
+  const missing = ORDER.filter(c => !parsed[c] || !parsed[c].length);
+  if (missing.length) { alert('Missing glyphs: ' + missing.join(' ')); return; }
+  glyphs = normalize(parsed); changed(true);
+};
+async function copy(id, btn) {
+  const el = $(id); el.select();
+  try { await navigator.clipboard.writeText(el.value); } catch (e) { document.execCommand('copy'); }
+  const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200);
+}
+$('copyAscii').onclick = e => copy('ascii', e.target);
+$('copyRust').onclick = e => copy('rust', e.target);
+
+// ---- wiring ----
+function renderAll() { renderPalette(); renderEditor(); renderPreview(); refreshExport(); }
+function changed(force) { save(); if (force) $('ascii').blur(); renderAll(); }
+['text','gap','n','zoom','color','alpha','bg','grid'].forEach(id => $(id).addEventListener('input', renderPreview));
+renderAll();
+</script>
+</body>
+</html>

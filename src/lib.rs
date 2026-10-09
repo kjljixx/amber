@@ -5,6 +5,7 @@
 //! into any rectangle. Draw other widgets afterward to put them on top.
 mod animation;
 mod color;
+mod digits;
 #[cfg(feature = "generation")]
 pub mod generation;
 mod gradient;
@@ -16,6 +17,7 @@ mod view;
 mod warp;
 
 pub use color::Rgb;
+pub use digits::Digits;
 pub use gradient::{Point, PreparedGradient};
 pub use half_blocks::{HalfBlocks, Preview};
 pub use recipe::{CompiledRecipe, MotionStyle, Recipe};
