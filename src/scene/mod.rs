@@ -8,7 +8,6 @@
 //! the same scene always produces the same recipe, and `variation` changes the
 //! random placement without changing the design.
 mod color;
-mod composition;
 mod elements;
 
 use std::collections::BTreeMap;
@@ -18,7 +17,6 @@ use serde::{Deserialize, Serialize};
 pub use color::ColorSpec;
 #[cfg(feature = "generation")]
 pub(crate) use color::{COLORS, family};
-pub use composition::{Colors, Composition, LightsAt};
 pub use elements::{Arrange, Bloom, Element, GridRule, LightRole};
 
 use crate::{
@@ -206,8 +204,7 @@ fn check(what: &str, value: f32, low: f32, high: f32) -> Result<(), String> {
 }
 
 impl Scene {
-    /// Reads, parses, and validates a scene file. A [`Composition`] file is
-    /// accepted too and compiled to its scene.
+    /// Reads, parses, and validates a scene file.
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let data = std::fs::read(path).map_err(|error| {
             std::io::Error::new(
@@ -215,28 +212,18 @@ impl Scene {
                 format!("could not read scene '{}': {error}", path.display()),
             )
         })?;
-        let error = |what: &str, message: String| {
+        let scene: Self = serde_json::from_slice(&data).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("{what} '{}': {message}", path.display()),
+                format!("invalid JSON scene '{}': {error}", path.display()),
             )
-        };
-        let invalid = |message: String| error("invalid scene", message);
-        let scene: Self = match serde_json::from_slice(&data) {
-            Ok(scene) => scene,
-            Err(scene_error) => match serde_json::from_slice::<Composition>(&data) {
-                Ok(composition) => composition.to_scene(1).map_err(invalid)?,
-                // Report the error for whichever format the file is written in.
-                Err(composition_error) if data.windows(8).any(|w| w == b"\"colors\"") => {
-                    return Err(error(
-                        "invalid JSON composition",
-                        composition_error.to_string(),
-                    ));
-                }
-                Err(_) => return Err(error("invalid JSON scene", scene_error.to_string())),
-            },
-        };
-        scene.compile().map_err(invalid)?;
+        })?;
+        scene.compile().map_err(|message| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid scene '{}': {message}", path.display()),
+            )
+        })?;
         Ok(scene)
     }
 

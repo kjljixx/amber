@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-pub const USAGE: &str = "Usage: amber [--recipe FILE | --scene NAME_OR_FILE]\n\nWithout either, starts in Simple mode.\nWith one, starts in Loaded or Scene mode; m cycles it with Simple and Complex.\n\n  --recipe FILE         Load gradient settings from JSON\n  --scene NAME_OR_FILE  Load a scene or composition from JSON, or a bundled scene by name\n                        (desert_hills, redwood_forest, city_lights).\n                        A composition file (see docs/composition-format.md) also works\n  -h, --help            Show this help";
+pub const USAGE: &str = "Usage: amber [--recipe FILE | --scene NAME_OR_FILE]\n\nWithout either, starts in Simple mode.\nWith one, starts in Loaded or Scene mode; m cycles it with Simple and Complex.\n\n  --recipe FILE         Load gradient settings from JSON\n  --scene NAME_OR_FILE  Load a scene from JSON, or a bundled scene by name\n                        (desert_hills, redwood_forest, city_lights)\n  -h, --help            Show this help";
 
 #[derive(Debug, PartialEq)]
 pub enum Command {

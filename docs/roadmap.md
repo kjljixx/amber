@@ -21,10 +21,11 @@ of the warp that point feels.
 
 ## Other deferred ideas
 
-- **More composition parts:** stars as their own part, waves, clouds.
-- **Tune the parts, not scenes:** defaults for each part (feature height,
-  bloom, ridge contrast) are shared by every prompt, so improvements there lift
-  everything. The bundled scenes remain the reference for how good it can get.
+- **Jev choosing scene parts:** tried in commit `732a49d` (a `Composition` of
+  land, features, lights, glow and so on, filled in by Jev) and removed. It
+  made recognizable places but pulled Jev's output away from plain gradients.
+  Jev picks colors and one of the six layouts again; scenes remain for
+  hand-written files.
 - **More elements:** soft clouds or blobs, stars, a ground plane, and
   rows of repeated shapes (fences, waves). Each is one variant in
   `src/scene/elements.rs`.
