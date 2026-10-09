@@ -1,18 +1,62 @@
 use crate::color::{Oklab, Rgb, oklab_to_rgb, rgb_to_oklab};
 use crate::warp::Warp;
 
-const MAX_POINTS: usize = 24;
+const MAX_POINTS: usize = 256;
+const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.05..=10.0;
+const STRETCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
     pub position: [f32; 2],
     pub color: Rgb,
+    /// Width of this point's region along its short axis, and the softness of
+    /// its edges. Below 1 gives a small, crisp spot; above 1 a broad glow.
+    /// Relative to the recipe's softness.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub radius: f32,
+    /// How far the region reaches along its long axis, as a multiple of
+    /// `radius`. Below 1 is tall (reach is `radius / stretch` vertically) and
+    /// above 1 is wide (reach is `radius * stretch` horizontally). The other
+    /// axis keeps `radius`. Measured in aspect-corrected space.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub stretch: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(value: &f32) -> bool {
+    *value == 1.0
+}
+
+impl Point {
+    pub fn new(position: [f32; 2], color: Rgb) -> Self {
+        Self {
+            position,
+            color,
+            radius: 1.0,
+            stretch: 1.0,
+        }
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    pub fn with_stretch(mut self, stretch: f32) -> Self {
+        self.stretch = stretch;
+        self
+    }
 }
 
 struct LabPoint {
     position: [f32; 2],
     color: Oklab,
+    /// Per-axis multipliers turning squared offsets into region-relative distance.
+    metric: [f32; 2],
 }
 
 pub struct Gradient {
@@ -31,7 +75,7 @@ pub struct PreparedGradient {
 impl Gradient {
     pub fn new(points: &[Point], softness: f32) -> Result<Self, &'static str> {
         if !(2..=MAX_POINTS).contains(&points.len()) {
-            return Err("a gradient needs between 2 and 24 points");
+            return Err("a gradient needs between 2 and 256 points");
         }
         if !softness.is_finite() || !(0.0..=1.0).contains(&softness) {
             return Err("softness must be finite and between 0 and 1");
@@ -44,6 +88,18 @@ impl Gradient {
         }) {
             return Err("point coordinates must be finite and between 0 and 1");
         }
+        if points
+            .iter()
+            .any(|point| !RADIUS_RANGE.contains(&point.radius))
+        {
+            return Err("point radius must be finite and between 0.05 and 10");
+        }
+        if points
+            .iter()
+            .any(|point| !STRETCH_RANGE.contains(&point.stretch))
+        {
+            return Err("point stretch must be finite and between 0.1 and 10");
+        }
 
         let radius = 0.04 + 0.28 * softness;
         Ok(Self {
@@ -52,10 +108,28 @@ impl Gradient {
                 .map(|point| LabPoint {
                     position: point.position,
                     color: rgb_to_oklab(point.color),
+                    metric: Self::metric(point.radius, point.stretch),
                 })
                 .collect(),
             radius_squared: radius * radius,
         })
+    }
+
+    // Stretch lengthens one axis and leaves the other at `radius`. An
+    // area-preserving stretch (x by s, y by 1/s) looks tidier but also narrows
+    // the short axis, so a wide band gets hard top and bottom edges and a tall
+    // trunk gets a thin, hard-edged width. Making bands soft then needs
+    // `radius` raised to about sqrt(stretch) on every point, which is easy to
+    // forget and hard to reason about. Keeping the short axis at `radius` means
+    // `radius` always sets the width and softness and `stretch` only elongates.
+    fn metric(radius: f32, stretch: f32) -> [f32; 2] {
+        let wide = stretch.max(1.0);
+        let tall = stretch.min(1.0);
+        let radius_squared = radius * radius;
+        [
+            1.0 / (radius_squared * wide * wide),
+            tall * tall / radius_squared,
+        ]
     }
 
     pub fn prepare(&self, aspect: f32) -> PreparedGradient {
@@ -68,6 +142,7 @@ impl Gradient {
                 .map(|point| LabPoint {
                     position: [(point.position[0] - 0.5) * x_scale, point.position[1] - 0.5],
                     color: point.color,
+                    metric: point.metric,
                 })
                 .collect(),
             x_scale,
@@ -122,15 +197,16 @@ impl PreparedGradient {
         let mut nearest = f32::INFINITY;
 
         for (point, distance) in self.points.iter().zip(&mut distances) {
-            *distance = (position[0] - point.position[0]).powi(2)
-                + (position[1] - point.position[1]).powi(2);
+            *distance = (position[0] - point.position[0]).powi(2) * point.metric[0]
+                + (position[1] - point.position[1]).powi(2) * point.metric[1];
             nearest = nearest.min(*distance);
         }
 
         let mut lab = [0.0; 3];
         let mut total_weight = 0.0;
         for (point, distance) in self.points.iter().zip(distances) {
-            // The nearest point has weight 1, avoiding all weights underflowing.
+            // Distances are relative to each point's own region. The nearest has
+            // weight 1, avoiding all weights underflowing.
             let weight = (-(distance - nearest) / self.radius_squared).exp();
             for (channel, color) in lab.iter_mut().zip(point.color) {
                 *channel += color * weight;
@@ -177,14 +253,8 @@ mod tests {
     fn pair(softness: f32) -> Gradient {
         Gradient::new(
             &[
-                Point {
-                    position: [0.0, 0.5],
-                    color: [0, 0, 0],
-                },
-                Point {
-                    position: [1.0, 0.5],
-                    color: [255, 255, 255],
-                },
+                Point::new([0.0, 0.5], [0, 0, 0]),
+                Point::new([1.0, 0.5], [255, 255, 255]),
             ],
             softness,
         )
@@ -302,16 +372,7 @@ mod tests {
     fn identical_colors_stay_constant_at_extreme_aspects() {
         let color = [45, 180, 210];
         let gradient = Gradient::new(
-            &[
-                Point {
-                    position: [0.0, 0.0],
-                    color,
-                },
-                Point {
-                    position: [1.0, 1.0],
-                    color,
-                },
-            ],
+            &[Point::new([0.0, 0.0], color), Point::new([1.0, 1.0], color)],
             0.0,
         )
         .unwrap();
@@ -324,30 +385,155 @@ mod tests {
     }
 
     #[test]
+    fn default_radius_and_stretch_match_plain_distance_blending() {
+        let points = [
+            Point::new([0.1, 0.2], [200, 40, 40]),
+            Point::new([0.8, 0.3], [30, 90, 220]),
+            Point::new([0.4, 0.9], [240, 220, 90]),
+        ];
+        let softness = 0.4;
+        let field = Gradient::new(&points, softness).unwrap().prepare(1.6);
+        let scale = 1.6_f32.sqrt();
+        let radius = 0.04 + 0.28 * softness;
+        for (x, y) in [(0.0, 0.0), (0.3, 0.5), (0.6, 0.6), (1.0, 1.0)] {
+            let distances = points.each_ref().map(|point| {
+                ((x - point.position[0]) * scale).powi(2) + (y - point.position[1]).powi(2)
+            });
+            let nearest = distances.into_iter().fold(f32::INFINITY, f32::min);
+            let mut lab = [0.0; 3];
+            let mut total = 0.0;
+            for (point, distance) in points.iter().zip(distances) {
+                let weight = (-(distance - nearest) / (radius * radius)).exp();
+                for (channel, color) in lab.iter_mut().zip(rgb_to_oklab(point.color)) {
+                    *channel += color * weight;
+                }
+                total += weight;
+            }
+            assert_eq!(field.sample(x, y), oklab_to_rgb(lab.map(|c| c / total)));
+        }
+    }
+
+    // A bright point among four dark ones, for comparing how far it reaches.
+    fn lit(light: Point) -> PreparedGradient {
+        let dark = |x, y| Point::new([x, y], [0, 0, 0]);
+        Gradient::new(
+            &[
+                light,
+                dark(0.2, 0.5),
+                dark(0.8, 0.5),
+                dark(0.5, 0.2),
+                dark(0.5, 0.8),
+            ],
+            0.3,
+        )
+        .unwrap()
+        .prepare(1.0)
+    }
+
+    #[test]
+    fn smaller_radius_shrinks_a_points_region() {
+        let white = Point::new([0.5, 0.5], [255, 255, 255]);
+        let normal = lit(white.clone()).sample(0.6, 0.5)[0];
+        let small = lit(white.with_radius(0.3)).sample(0.6, 0.5)[0];
+        assert!(normal > 120, "{normal}");
+        assert!(small < 30, "{small}");
+    }
+
+    #[test]
+    fn small_radius_gives_crisper_edges() {
+        let width = |radius: f32| {
+            let field = lit(Point::new([0.5, 0.5], [255, 255, 255]).with_radius(radius));
+            // Distance over which the white falls from 90% to 10%.
+            let at = |level: f32| {
+                (0..2000)
+                    .map(|i| 0.5 + i as f32 * 0.0001)
+                    .find(|&x| f32::from(field.sample(x, 0.5)[0]) < level * 255.0)
+                    .unwrap()
+            };
+            at(0.1) - at(0.9)
+        };
+        assert!(width(0.4) < width(1.0) * 0.6);
+    }
+
+    #[test]
+    fn stretch_reaches_farther_along_the_long_axis() {
+        let tall = lit(Point::new([0.5, 0.5], [255, 255, 255]).with_stretch(0.25));
+        let (along, across) = (tall.sample(0.5, 0.65)[0], tall.sample(0.65, 0.5)[0]);
+        assert!(along > across + 60, "{along} vs {across}");
+        // The short axis keeps the point's own radius, so stretching never
+        // narrows or sharpens it.
+        let plain = lit(Point::new([0.5, 0.5], [255, 255, 255]));
+        assert_eq!(across, plain.sample(0.65, 0.5)[0]);
+        let wide = lit(Point::new([0.5, 0.5], [255, 255, 255]).with_stretch(4.0));
+        let (along, across) = (wide.sample(0.65, 0.5)[0], wide.sample(0.5, 0.65)[0]);
+        assert!(along > across + 60, "{along} vs {across}");
+        assert_eq!(across, plain.sample(0.5, 0.65)[0]);
+    }
+
+    #[test]
+    fn point_attributes_are_validated_and_capped() {
+        let base = [
+            Point::new([0.0, 0.0], [0, 0, 0]),
+            Point::new([1.0, 1.0], [255, 255, 255]),
+        ];
+        for radius in [0.0, 0.04, 10.1, f32::NAN, f32::INFINITY, -1.0] {
+            let mut points = base.clone();
+            points[0].radius = radius;
+            assert!(Gradient::new(&points, 0.5).is_err(), "radius {radius}");
+        }
+        for stretch in [0.0, 0.09, 10.1, f32::NAN, f32::INFINITY, -1.0] {
+            let mut points = base.clone();
+            points[1].stretch = stretch;
+            assert!(Gradient::new(&points, 0.5).is_err(), "stretch {stretch}");
+        }
+        let mut points = base.to_vec();
+        points[0].radius = 0.05;
+        points[1].stretch = 10.0;
+        assert!(Gradient::new(&points, 0.5).is_ok());
+
+        let many = |count: usize| vec![base[0].clone(); count];
+        assert!(Gradient::new(&many(MAX_POINTS), 0.5).is_ok());
+        assert!(Gradient::new(&many(MAX_POINTS + 1), 0.5).is_err());
+    }
+
+    #[test]
+    fn json_points_default_missing_attributes_and_omit_defaults() {
+        let plain: Point =
+            serde_json::from_str(r#"{"position":[0.1,0.2],"color":[1,2,3]}"#).unwrap();
+        assert_eq!((plain.radius, plain.stretch), (1.0, 1.0));
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"position":[0.1,0.2],"color":[1,2,3]}"#
+        );
+        let shaped: Point = serde_json::from_str(
+            r#"{"position":[0.1,0.2],"color":[1,2,3],"radius":0.5,"stretch":3.0}"#,
+        )
+        .unwrap();
+        assert_eq!((shaped.radius, shaped.stretch), (0.5, 3.0));
+        assert!(
+            serde_json::to_string(&shaped)
+                .unwrap()
+                .contains("\"stretch\":3.0")
+        );
+        assert!(
+            serde_json::from_str::<Point>(r#"{"position":[0.1,0.2],"color":[1,2,3],"radus":0.5}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_invalid_recipes() {
         assert!(Gradient::new(&[], 0.5).is_err());
         let points = [
-            Point {
-                position: [0.0, 0.0],
-                color: [0, 0, 0],
-            },
-            Point {
-                position: [1.0, 1.0],
-                color: [255, 255, 255],
-            },
+            Point::new([0.0, 0.0], [0, 0, 0]),
+            Point::new([1.0, 1.0], [255, 255, 255]),
         ];
         for softness in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
             assert!(Gradient::new(&points, softness).is_err());
         }
         let invalid = [
-            Point {
-                position: [f32::NAN, 0.0],
-                color: [0, 0, 0],
-            },
-            Point {
-                position: [1.0, 1.0],
-                color: [255, 255, 255],
-            },
+            Point::new([f32::NAN, 0.0], [0, 0, 0]),
+            Point::new([1.0, 1.0], [255, 255, 255]),
         ];
         assert!(Gradient::new(&invalid, 0.5).is_err());
     }

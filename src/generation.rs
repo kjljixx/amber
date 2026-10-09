@@ -446,10 +446,10 @@ impl Design {
                 let light = (light + (random() - 0.5) * 0.04).clamp(0.08, 0.97);
                 let chroma = chroma * (0.5 + 0.7 * self.saturation / 4.0);
                 let angle = (hue + (random() - 0.5) * 12.0).to_radians();
-                points.push(Point {
-                    position: [x, y],
-                    color: oklab_to_rgb([light, chroma * angle.cos(), chroma * angle.sin()]),
-                });
+                points.push(Point::new(
+                    [x, y],
+                    oklab_to_rgb([light, chroma * angle.cos(), chroma * angle.sin()]),
+                ));
             }
         }
         let energy = self.energy / 4.0;
