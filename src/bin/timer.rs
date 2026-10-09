@@ -12,6 +12,11 @@
 //! Once Jev has made a gradient, the description stays centered above the clock
 //! until a new one replaces it.
 //!
+//! When a phase ends, a chime plays and a desktop notification appears: a
+//! climbing one when a work period ends, a falling one when a break does.
+//! `cargo run --offline --bin timer -- --alarm-test` plays both now, to check
+//! your sound and notification settings.
+//!
 //! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
 //! docs/generation.md.
 use std::{
@@ -35,6 +40,8 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+#[path = "../alarm.rs"]
+mod alarm;
 #[path = "../speed_control.rs"]
 mod speed_control;
 use speed_control::SpeedControl;
@@ -460,11 +467,74 @@ fn apply(
     speed.set_base(gradient.radians_per_second, view)
 }
 
+/// What to play and say when `phase` has just begun.
+fn announcement(phase: Phase) -> (alarm::Chime, String) {
+    let minutes = phase.length().as_secs() / 60;
+    match phase {
+        Phase::Break(_) => (
+            alarm::Chime::WorkDone,
+            format!("Time for a {minutes} minute break"),
+        ),
+        Phase::Work(n) => (
+            alarm::Chime::BreakDone,
+            format!("Back to work: period {n} of {WORK_PERIODS}, {minutes} minutes"),
+        ),
+    }
+}
+
+/// Sound and show the end of `phase`'s predecessor, without waiting for it.
+fn announce(phase: Phase) {
+    let (chime, message) = announcement(phase);
+    alarm::play(chime);
+    alarm::notify("Pomodoro", &message);
+}
+
+/// `--alarm-test`: play both chimes with their notifications, one after the
+/// other, and say how each was played.
+fn alarm_test() -> io::Result<()> {
+    for phase in [Phase::Break(1), Phase::Work(2)] {
+        let (chime, message) = announcement(phase);
+        println!("{message}");
+        let notified = alarm::notify("Pomodoro", &message);
+        match alarm::play(chime)
+            .join()
+            .map_err(|_| io::Error::other("the sound thread failed"))?
+        {
+            alarm::Played::Player(player) => println!("  chime played with {player}"),
+            alarm::Played::Bell => println!("  no audio player worked, so the terminal bell rang"),
+        }
+        match notified.join() {
+            Ok(true) => println!("  notification shown"),
+            _ => println!("  notification failed (check your system's notification settings)"),
+        }
+    }
+    Ok(())
+}
+
 fn digits(text: &str) -> io::Result<Digits> {
     Digits::new(text, WHITE, ALPHA).map_err(io::Error::other)
 }
 
-fn main() -> io::Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("timer: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> io::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("--alarm-test") => return alarm_test(),
+        Some(other) => {
+            return Err(io::Error::other(format!(
+                "unknown argument '{other}'; the only option is --alarm-test"
+            )));
+        }
+    }
     let start = Instant::now();
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
@@ -479,7 +549,9 @@ fn main() -> io::Result<()> {
     ratatui::run(|terminal| {
         loop {
             let now = Instant::now();
-            clock.advance(now);
+            if clock.advance(now) {
+                announce(clock.phase());
+            }
             if let Some(result) = generator.poll() {
                 match result {
                     Ok(gradient) => {
@@ -1284,5 +1356,55 @@ mod tests {
         let before = buffer.clone();
         draw_caption(&mut buffer, Rect::new(0, 2, 10, 1), "");
         assert_eq!(buffer, before);
+    }
+
+    #[test]
+    fn each_phase_change_announces_itself_with_the_matching_chime() {
+        let say = |phase| announcement(phase);
+        assert_eq!(
+            say(Phase::Break(1)),
+            (
+                alarm::Chime::WorkDone,
+                "Time for a 5 minute break".to_owned()
+            )
+        );
+        assert_eq!(
+            say(Phase::Break(4)),
+            (
+                alarm::Chime::WorkDone,
+                "Time for a 20 minute break".to_owned()
+            )
+        );
+        assert_eq!(
+            say(Phase::Work(2)),
+            (
+                alarm::Chime::BreakDone,
+                "Back to work: period 2 of 4, 25 minutes".to_owned()
+            )
+        );
+        assert_eq!(say(Phase::Work(1)).0, alarm::Chime::BreakDone);
+    }
+
+    #[test]
+    fn advance_reports_a_change_exactly_when_a_phase_ends() {
+        let start = Instant::now();
+        let mut clock = Clock::new(start);
+        let after = |seconds: u64| start + Duration::from_secs(seconds);
+        // Nothing to announce at the start or just before the end.
+        assert!(!clock.advance(start));
+        assert!(!clock.advance(after(25 * 60 - 1)));
+        // The work period ends: announce once, not again on the next pass.
+        assert!(clock.advance(after(25 * 60)));
+        assert_eq!(clock.phase(), Phase::Break(1));
+        assert!(!clock.advance(after(25 * 60 + 1)));
+        // Skipping several phases at once (a suspended laptop) is one change.
+        assert!(clock.advance(after(100 * 60)));
+        assert_eq!(clock.phase(), Phase::Work(4));
+        // A paused clock never changes, however long it sits.
+        clock.toggle_pause(after(100 * 60));
+        assert!(!clock.advance(after(1000 * 60)));
+        // Resetting is not a phase ending.
+        clock.reset(after(1000 * 60));
+        assert!(!clock.advance(after(1000 * 60)));
     }
 }
