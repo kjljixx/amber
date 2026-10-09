@@ -157,6 +157,36 @@ impl Digits {
         })
     }
 
+    /// The smallest rectangle of terminal cells that holds the digits when they
+    /// are rendered into `area`, or `None` if nothing fits and nothing is drawn.
+    /// A host can use it to place something next to the digits.
+    pub fn bounds(&mut self, area: Rect) -> Option<Rect> {
+        let rows = area.height.min(u16::MAX / 2);
+        if area.width == 0 || rows == 0 {
+            return None;
+        }
+        let mask = self.mask(area.width, 2 * rows);
+        let (mut left, mut top, mut right, mut bottom) = (u16::MAX, u16::MAX, 0, 0);
+        for row in 0..2 * rows {
+            for column in 0..area.width {
+                if mask.at(column, row) {
+                    left = left.min(column);
+                    right = right.max(column);
+                    top = top.min(row);
+                    bottom = bottom.max(row);
+                }
+            }
+        }
+        (left <= right).then(|| {
+            Rect::new(
+                area.x + left,
+                area.y + top / 2,
+                right - left + 1,
+                bottom / 2 - top / 2 + 1,
+            )
+        })
+    }
+
     /// The mask for a sample grid, rebuilt only when its size changes.
     fn mask(&mut self, width: u16, height: u16) -> &Mask {
         if self.mask.as_ref().map(Mask::size) != Some((width, height)) {
@@ -560,5 +590,63 @@ mod tests {
         ] {
             (&mut text).render(area, &mut buffer);
         }
+    }
+
+    #[test]
+    fn bounds_are_the_cells_the_digits_touch() {
+        // Cells that changed when the digits were drawn over flat half blocks.
+        let changed_cells = |digits: &mut Digits, area: Rect| {
+            let flat = |buffer: &mut Buffer| {
+                for cell in &mut buffer.content {
+                    cell.set_char('▀')
+                        .set_fg(Color::Rgb(40, 60, 90))
+                        .set_bg(Color::Rgb(40, 60, 90));
+                }
+            };
+            let mut plain = Buffer::empty(area);
+            flat(&mut plain);
+            let mut drawn = plain.clone();
+            Widget::render(digits, area, &mut drawn);
+            let mut cells = Vec::new();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if plain[(x, y)] != drawn[(x, y)] {
+                        cells.push((x, y));
+                    }
+                }
+            }
+            cells
+        };
+
+        for (text, area) in [
+            ("25:49", Rect::new(0, 0, 120, 40)),
+            ("1", Rect::new(0, 0, 80, 24)),
+            ("12\n34", Rect::new(0, 0, 100, 30)),
+            ("25:49", Rect::new(10, 5, 120, 40)),
+        ] {
+            let mut layer = digits(text);
+            let bounds = layer.bounds(area).unwrap();
+            let cells = changed_cells(&mut layer, area);
+            // The bounds are exactly the extent of what was drawn.
+            let extent = |pick: fn(&(u16, u16)) -> u16| {
+                let values: Vec<u16> = cells.iter().map(pick).collect();
+                (*values.iter().min().unwrap(), *values.iter().max().unwrap())
+            };
+            assert_eq!(
+                extent(|c| c.0),
+                (bounds.left(), bounds.right() - 1),
+                "{text}"
+            );
+            assert_eq!(
+                extent(|c| c.1),
+                (bounds.top(), bounds.bottom() - 1),
+                "{text}"
+            );
+        }
+
+        // Too small an area draws nothing, and so has no bounds.
+        let mut clock = digits("25:49");
+        assert_eq!(clock.bounds(Rect::new(0, 0, 20, 8)), None);
+        assert_eq!(clock.bounds(Rect::new(0, 0, 0, 0)), None);
     }
 }

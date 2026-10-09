@@ -56,6 +56,34 @@ optional API-reported cost. Configuration loading is explicit; the library never
 reads `.env` merely because it is imported. Credentials are not included in
 debug output or server-error messages.
 
+`amber::generation::Generator` is the non-blocking wrapper `jev` and `timer`
+share, for a host that does not want to manage a thread itself:
+
+```rust
+let mut generator = Generator::new();
+
+// when the user submits a description
+if let Some(cached) = generator.submit("glacier ice") {
+    // this prompt was already answered this session: use it now
+}
+
+// every pass of the event loop
+if let Some(result) = generator.poll() {
+    // Ok(GeneratedGradient) or Err(message); the request has finished
+}
+// wake every ~25 ms while generator.is_pending(); show generator.status()
+```
+
+`submit` runs `JevClient::generate` on a worker thread, using `OPENROUTER_API_KEY`
+and `JEV_MODEL` from the environment or a `.env` file in the working directory.
+It ignores a second request while one is in flight and remembers the last 32
+answers, so repeating a description costs nothing.
+
+`cargo run --offline --bin timer` is a pomodoro clock that uses it: press `t`
+to describe a gradient, `Up`/`Down` to change its speed. Gradients play at 8x
+the rate Jev suggests by default. Once Jev has made a gradient, the description
+stays above the clock until a new one replaces it.
+
 For renderer-only consumers, use `default-features = false` in the Amber Cargo
 dependency. This removes the optional HTTP client and generation API.
 

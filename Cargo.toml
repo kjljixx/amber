@@ -21,6 +21,11 @@ name = "jev"
 path = "src/bin/jev.rs"
 required-features = ["generation"]
 
+[[bin]]
+name = "timer"
+path = "src/bin/timer.rs"
+required-features = ["generation"]
+
 # Keep debug symbols, but optimize the CPU renderer for normal `cargo run`.
 [profile.dev.package.amber]
 opt-level = 3

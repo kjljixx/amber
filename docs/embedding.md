@@ -96,6 +96,10 @@ rarely fills the full width. If even `n = 1` does not fit, nothing is drawn: at
 and 6 terminal rows once the margin is counted. Every digit fills the same box and has the
 same width, so a clock does not shift as it changes.
 
+`Digits::bounds(area)` gives the rectangle of cells the digits occupy when
+rendered into `area`, for placing something beside them; the timer's prompt
+line uses it.
+
 The coverage is computed once per area size, so animation costs only the blend
 over covered samples. Pick a color with contrast against the whole gradient:
 pale text fades over light regions. To change the text, build a new `Digits`.

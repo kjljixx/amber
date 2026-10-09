@@ -6,15 +6,38 @@
 //!
 //! `cargo run --offline --bin timer`
 //! Space: pause or resume the timer and the gradient | r: back to the start of
-//! the cycle, 25:00 | q, Esc or Ctrl+C: quit
+//! the cycle, 25:00 | t: describe a gradient for Jev to make, in a fresh box (Enter
+//! sends it, Esc cancels) | Up/Down: gradient speed | q, Esc or Ctrl+C: quit
+//!
+//! Once Jev has made a gradient, the description stays centered above the clock
+//! until a new one replaces it.
+//!
+//! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
+//! docs/generation.md.
 use std::{
     io,
     time::{Duration, Instant},
 };
 
-use amber::{Digits, GradientView, blend_samples, presets};
+use amber::{
+    Digits, GradientView, blend_samples,
+    generation::{GeneratedGradient, Generator},
+    presets,
+};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::{buffer::Buffer, layout::Rect};
+use ratatui::{
+    Frame,
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Clear, Paragraph},
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[path = "../speed_control.rs"]
+mod speed_control;
+use speed_control::SpeedControl;
 
 const WORK: Duration = Duration::from_secs(25 * 60);
 const SHORT_BREAK: Duration = Duration::from_secs(5 * 60);
@@ -25,10 +48,18 @@ const WORK_PERIODS: u8 = 4;
 const ALPHA: f32 = 0.6;
 /// Opacity of the unlit part of the bars.
 const DIM_ALPHA: f32 = 0.25;
-/// Gradient animation: radians per second, at 20 frames per second.
-const SPEED: f64 = 1.2;
-const FRAME_INTERVAL: Duration = Duration::from_millis(50);
+/// Gradient animation rate before Jev suggests one, in radians per second.
+const BASE_SPEED: f64 = 0.15;
+/// Speed steps above 1x at the start: each is a factor of the square root of
+/// two, so 6 steps is 8x. With the base rate that is 1.2 radians per second.
+const DEFAULT_SPEED_STEPS: i32 = 6;
+const MAX_PROMPT_CHARS: usize = 1000;
+/// How far the caption's backing is darkened, and how many cells it reaches
+/// past each end of the text.
+const SCRIM_ALPHA: f32 = 0.3;
+const SCRIM_PADDING: u16 = 2;
 const WHITE: [u8; 3] = [255, 255, 255];
+const BLACK: [u8; 3] = [0, 0, 0];
 
 /// One stretch of the cycle. The number says which work period it is in or
 /// follows, from 1 to 4.
@@ -225,6 +256,210 @@ fn draw_cycle(buffer: &mut Buffer, area: Rect, phase: Phase, progress: f32) {
     blend_samples(buffer, area, WHITE, DIM_ALPHA, samples(false));
 }
 
+/// The text box for describing a gradient, and the description behind the
+/// gradient on screen.
+#[derive(Default)]
+struct Prompt {
+    open: bool,
+    /// What is being typed. Empty whenever the box opens, so a new description
+    /// starts from nothing; the one on screen is `shown`.
+    text: String,
+    /// The description that made the current gradient, kept above the clock
+    /// until a new one replaces it.
+    shown: Option<String>,
+    /// The description of a request that has not finished.
+    in_flight: Option<String>,
+}
+
+impl Prompt {
+    fn push(&mut self, character: char) {
+        if !character.is_control() && self.text.chars().count() < MAX_PROMPT_CHARS {
+            self.text.push(character);
+        }
+    }
+
+    fn paste(&mut self, pasted: &str) {
+        for character in pasted.chars() {
+            self.push(character);
+        }
+    }
+
+    /// Whether there is a line to draw: the box is open, or a description is
+    /// being shown above the clock.
+    fn has_line(&self) -> bool {
+        self.open || self.shown.is_some()
+    }
+
+    /// Open an empty box. The description on screen stays where it is until a
+    /// new one has been made.
+    fn begin(&mut self) {
+        self.open = true;
+        self.text.clear();
+    }
+
+    /// Close the box and drop what was typed. The description on screen stays.
+    fn cancel(&mut self) {
+        self.open = false;
+        self.text.clear();
+    }
+
+    /// A request has started for the text in the box.
+    fn started(&mut self) {
+        self.in_flight = Some(self.text.trim().to_owned());
+    }
+
+    /// The gradient for the request in flight has arrived: its description is
+    /// now the one shown, whatever has been typed since.
+    fn succeeded(&mut self) {
+        if let Some(description) = self.in_flight.take() {
+            self.shown = Some(description);
+        }
+        self.open = false;
+        self.text.clear();
+    }
+
+    /// The request failed. The old gradient and description stay.
+    fn failed(&mut self) {
+        self.in_flight = None;
+    }
+
+    /// The end of the text being edited that fits in `columns` terminal
+    /// columns, where the cursor is.
+    fn tail(&self, columns: usize) -> &str {
+        let mut visible = self.text.as_str();
+        while visible.width() > columns {
+            let first = visible.chars().next().map_or(0, char::len_utf8);
+            visible = &visible[first..];
+        }
+        visible
+    }
+
+    /// The start of the description on screen, ending in `…` if it is cut.
+    fn caption(&self, columns: usize) -> String {
+        let text = self.shown.as_deref().unwrap_or_default();
+        if text.width() <= columns {
+            return text.to_owned();
+        }
+        let mut caption = String::new();
+        for character in text.chars() {
+            // Leave a column for the ellipsis.
+            if caption.width() + character.width().unwrap_or(0) >= columns {
+                break;
+            }
+            caption.push(character);
+        }
+        caption.push('…');
+        caption
+    }
+}
+
+/// Where the prompt line goes: just above the digits and lined up with them,
+/// with a blank row between when there is room. With nowhere above the digits,
+/// or no digits on screen, it takes the top row.
+fn prompt_row(area: Rect, digits: Option<Rect>) -> Option<Rect> {
+    if area.is_empty() {
+        return None;
+    }
+    if let Some(digits) = digits {
+        let above = digits.y.saturating_sub(area.y);
+        if above >= 1 {
+            let y = digits.y - above.min(2);
+            return Some(Rect::new(digits.x, y, digits.width, 1));
+        }
+    }
+    Some(Rect::new(area.x, area.y, area.width, 1))
+}
+
+/// The prompt line. While the box is open it is a chevron and the text being
+/// edited on an opaque black line, with a cursor, so it stays legible while
+/// typing. Otherwise it is the description behind the current gradient, as bare
+/// text centered right on the gradient.
+fn draw_prompt(frame: &mut Frame, row: Rect, prompt: &Prompt) {
+    if !prompt.open {
+        draw_caption(
+            frame.buffer_mut(),
+            row,
+            &prompt.caption(usize::from(row.width)),
+        );
+        return;
+    }
+    // The chevron, a space and the cursor take three columns.
+    let columns = usize::from(row.width.saturating_sub(3));
+    frame.render_widget(Clear, row);
+    let style = Style::default().fg(Color::White).bg(Color::Black);
+    // A reversed space is the cursor, so the terminal's own cursor can stay
+    // hidden instead of flickering while the gradient animates.
+    let line = Line::from(vec![
+        Span::raw(format!("> {}", prompt.tail(columns))),
+        Span::styled(" ", style.add_modifier(Modifier::REVERSED)),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(style), row);
+}
+
+/// White bold text over the half blocks, centered in `row`, on a scrim: the
+/// gradient behind it is darkened so the text stays legible over pale areas.
+/// The scrim is translucent, so the gradient still shows through it, and it
+/// reaches a little past each end of the text.
+///
+/// A letter's cell has one background color where the gradient has two, a top
+/// half and a bottom half, so each cell under the text takes their average. The
+/// cells of the scrim around the text keep both halves.
+fn draw_caption(buffer: &mut Buffer, row: Rect, text: &str) {
+    let row = row.intersection(buffer.area);
+    if row.is_empty() {
+        return;
+    }
+    let width = u16::try_from(text.width())
+        .unwrap_or(u16::MAX)
+        .min(row.width);
+    let left = row.x + (row.width - width) / 2;
+    if width == 0 {
+        return;
+    }
+
+    let scrim = Rect::new(
+        left.saturating_sub(SCRIM_PADDING),
+        row.y,
+        width + 2 * SCRIM_PADDING,
+        1,
+    );
+    blend_samples(buffer, scrim, BLACK, SCRIM_ALPHA, |_, _| true);
+
+    let backgrounds: Vec<Option<Color>> = (left..left + width)
+        .map(|x| {
+            let cell = &buffer[(x, row.y)];
+            match (cell.fg, cell.bg) {
+                (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) if cell.symbol() == "▀" => {
+                    let mean = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+                    Some(Color::Rgb(mean(r1, r2), mean(g1, g2), mean(b1, b2)))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    buffer.set_stringn(left, row.y, text, usize::from(width), style);
+    for (x, background) in (left..).zip(backgrounds) {
+        if let Some(background) = background {
+            buffer[(x, row.y)].set_bg(background);
+        }
+    }
+}
+
+/// Show a generated gradient and play it at the speed already chosen, scaled
+/// from the rate Jev suggests for it.
+fn apply(
+    view: &mut GradientView,
+    speed: &mut SpeedControl,
+    gradient: &GeneratedGradient,
+) -> io::Result<()> {
+    view.set_recipe(&gradient.recipe)
+        .map_err(io::Error::other)?;
+    speed.set_base(gradient.radians_per_second, view)
+}
+
 fn digits(text: &str) -> io::Result<Digits> {
     Digits::new(text, WHITE, ALPHA).map_err(io::Error::other)
 }
@@ -233,9 +468,10 @@ fn main() -> io::Result<()> {
     let start = Instant::now();
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
-    background
-        .set_timing(FRAME_INTERVAL, SPEED, start)
-        .map_err(io::Error::other)?;
+    let mut speed = SpeedControl::new(BASE_SPEED);
+    speed.change(DEFAULT_SPEED_STEPS, &mut background)?;
+    let mut generator = Generator::new();
+    let mut prompt = Prompt::default();
     let mut clock = Clock::new(start);
     let mut shown = label(clock.phase().length());
     let mut text = digits(&shown)?;
@@ -244,6 +480,16 @@ fn main() -> io::Result<()> {
         loop {
             let now = Instant::now();
             clock.advance(now);
+            if let Some(result) = generator.poll() {
+                match result {
+                    Ok(gradient) => {
+                        apply(&mut background, &mut speed, &gradient)?;
+                        prompt.succeeded();
+                    }
+                    Err(_) => prompt.failed(),
+                }
+                redraw = true;
+            }
             let current = label(clock.remaining(now));
             if current != shown {
                 text = digits(&current)?;
@@ -258,6 +504,12 @@ fn main() -> io::Result<()> {
                     background.render(frame, area);
                     frame.render_widget(&mut text, area);
                     draw_cycle(frame.buffer_mut(), area, clock.phase(), clock.progress(now));
+                    // The prompt goes over everything else, above the digits.
+                    if prompt.has_line() {
+                        if let Some(row) = prompt_row(area, text.bounds(area)) {
+                            draw_prompt(frame, row, &prompt);
+                        }
+                    }
                 })?;
                 redraw = false;
             }
@@ -267,6 +519,8 @@ fn main() -> io::Result<()> {
             let timeout = [
                 background.wait_duration(Instant::now()),
                 clock.until_label_changes(Instant::now()),
+                // A pending request has to be polled even while paused.
+                generator.is_pending().then_some(Duration::from_millis(25)),
             ]
             .into_iter()
             .flatten()
@@ -277,25 +531,62 @@ fn main() -> io::Result<()> {
                 }
             }
             match event::read()? {
-                Event::Key(key) if key.is_press() => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Event::Key(key) if key.is_press() => {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         return Ok(());
                     }
-                    KeyCode::Char(' ') => {
-                        let now = Instant::now();
-                        clock.toggle_pause(now);
-                        let mut playback = background.playback();
-                        playback.playing = !clock.is_paused();
-                        background.set_playback(playback, now);
-                        redraw = true;
+                    if prompt.open {
+                        match key.code {
+                            KeyCode::Esc => prompt.cancel(),
+                            KeyCode::Enter => {
+                                let was_pending = generator.is_pending();
+                                if let Some(cached) = generator.submit(&prompt.text) {
+                                    apply(&mut background, &mut speed, &cached)?;
+                                    prompt.started();
+                                    prompt.succeeded();
+                                } else if !was_pending && generator.is_pending() {
+                                    prompt.started();
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                prompt.text.pop();
+                            }
+                            KeyCode::Char(c)
+                                if !key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                prompt.push(c);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Char('t' | 'T') => prompt.begin(),
+                            KeyCode::Up | KeyCode::Down => {
+                                let step = if key.code == KeyCode::Up { 1 } else { -1 };
+                                speed.change(step, &mut background)?;
+                            }
+                            KeyCode::Char(' ') => {
+                                let now = Instant::now();
+                                clock.toggle_pause(now);
+                                let mut playback = background.playback();
+                                playback.playing = !clock.is_paused();
+                                background.set_playback(playback, now);
+                            }
+                            KeyCode::Char('r' | 'R') => clock.reset(Instant::now()),
+                            _ => {}
+                        }
                     }
-                    KeyCode::Char('r' | 'R') => {
-                        clock.reset(Instant::now());
-                        redraw = true;
-                    }
-                    _ => {}
-                },
+                    redraw = true;
+                }
+                Event::Paste(text) if prompt.open => {
+                    prompt.paste(&text);
+                    redraw = true;
+                }
                 Event::Resize(_, _) => redraw = true,
                 _ => {}
             }
@@ -305,7 +596,7 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Color;
+    use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
 
@@ -581,5 +872,417 @@ mod tests {
         let (mut buffer, area) = grey_screen(30, 6);
         draw_cycle(&mut buffer, area, Phase::Work(1), 0.5);
         assert!(buffer.content.iter().all(|c| c.fg == GREY && c.bg == GREY));
+    }
+
+    // ---- the Jev prompt and gradient speed ----
+
+    #[test]
+    fn the_prompt_edits_text_within_limits() {
+        let mut prompt = Prompt::default();
+        for character in "a sunset\n over\tthe sea".chars() {
+            prompt.push(character);
+        }
+        // Control characters are dropped.
+        assert_eq!(prompt.text, "a sunset overthe sea");
+        prompt.paste("\u{7}!\n?");
+        assert_eq!(prompt.text, "a sunset overthe sea!?");
+
+        // At most 1000 characters, counting characters and not bytes.
+        let mut long = Prompt::default();
+        long.paste(&"é".repeat(1500));
+        assert_eq!(long.text.chars().count(), MAX_PROMPT_CHARS);
+        long.push('x');
+        assert_eq!(long.text.chars().count(), MAX_PROMPT_CHARS);
+    }
+
+    #[test]
+    fn the_prompt_shows_the_end_of_the_text_that_fits() {
+        let mut prompt = Prompt::default();
+        prompt.paste("glacier ice");
+        assert_eq!(prompt.tail(40), "glacier ice");
+        assert_eq!(prompt.tail(5), "r ice");
+        assert_eq!(prompt.tail(0), "");
+        // Wide characters count as two columns.
+        let mut wide = Prompt::default();
+        wide.paste("日本語");
+        assert_eq!(wide.tail(4), "本語");
+        assert_eq!(wide.tail(5), "本語");
+    }
+
+    /// The prompt drawn over grey half blocks, with the clock's digits laid out
+    /// in the same area, and the row it was given.
+    fn draw(prompt: &Prompt, width: u16, rows: u16) -> (Buffer, Option<Rect>, Rect) {
+        let area = Rect::new(0, 0, width, rows);
+        let mut clock = digits("25:49").unwrap();
+        let bounds = clock.bounds(area);
+        let mut terminal = Terminal::new(TestBackend::new(width, rows)).unwrap();
+        terminal
+            .draw(|frame| {
+                for cell in &mut frame.buffer_mut().content {
+                    cell.set_char('▀').set_fg(GREY).set_bg(GREY);
+                }
+                if let Some(row) = prompt_row(area, bounds) {
+                    draw_prompt(frame, row, prompt);
+                }
+            })
+            .unwrap();
+        let row = prompt_row(area, bounds).unwrap();
+        (terminal.backend().buffer().clone(), bounds, row)
+    }
+
+    fn row_text(buffer: &Buffer, row: Rect) -> String {
+        (row.left()..row.right())
+            .map(|column| buffer[(column, row.y)].symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn the_prompt_line_sits_above_the_digits_lined_up_with_them() {
+        let area = Rect::new(0, 0, 100, 30);
+        let digits = Rect::new(20, 10, 60, 9);
+        // A blank row between them when there is room...
+        assert_eq!(
+            prompt_row(area, Some(digits)),
+            Some(Rect::new(20, 8, 60, 1))
+        );
+        // ...directly above when there is only one row...
+        let tight = Rect::new(20, 1, 60, 9);
+        assert_eq!(prompt_row(area, Some(tight)), Some(Rect::new(20, 0, 60, 1)));
+        // ...and along the top edge when there is no room above, or no digits.
+        let flush = Rect::new(20, 0, 60, 9);
+        assert_eq!(prompt_row(area, Some(flush)), Some(Rect::new(0, 0, 100, 1)));
+        assert_eq!(prompt_row(area, None), Some(Rect::new(0, 0, 100, 1)));
+        assert_eq!(prompt_row(Rect::new(0, 0, 0, 0), None), None);
+        // An offset screen keeps its offset.
+        let offset = Rect::new(5, 3, 100, 30);
+        assert_eq!(prompt_row(offset, None), Some(Rect::new(5, 3, 100, 1)));
+        assert_eq!(
+            prompt_row(offset, Some(Rect::new(25, 13, 60, 9))),
+            Some(Rect::new(25, 11, 60, 1))
+        );
+    }
+
+    #[test]
+    fn the_prompt_is_only_a_chevron_and_the_text_just_above_the_clock() {
+        let mut prompt = Prompt {
+            open: true,
+            ..Prompt::default()
+        };
+        prompt.paste("misty forest");
+        let (buffer, digits, row) = draw(&prompt, 100, 30);
+        let digits = digits.unwrap();
+        assert_eq!(row.x, digits.x);
+        assert_eq!(row.width, digits.width);
+        assert!(row.bottom() < digits.y);
+
+        // A chevron, the text and a cursor, and nothing else.
+        assert!(row_text(&buffer, row).starts_with("> misty forest "));
+        assert_eq!(row_text(&buffer, row).trim_end(), "> misty forest");
+        let cursor = row.x + 2 + 12;
+        assert!(
+            buffer[(cursor, row.y)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            !buffer[(cursor - 1, row.y)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        // Opaque black behind it, for legibility.
+        assert!((row.left()..row.right()).all(|x| buffer[(x, row.y)].bg == Color::Black));
+        // Everything else on the screen is untouched.
+        for y in 0..30 {
+            for x in 0..100 {
+                if y != row.y || !(row.left()..row.right()).contains(&x) {
+                    assert_eq!((buffer[(x, y)].fg, buffer[(x, y)].bg), (GREY, GREY));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_prompt_scrolls_to_show_its_end() {
+        let mut prompt = Prompt {
+            open: true,
+            ..Prompt::default()
+        };
+        prompt.paste(
+            "a misty forest at dawn with a long thin river running quietly through it \
+             and a small wooden bridge over the water near the very end",
+        );
+        let (buffer, _, row) = draw(&prompt, 100, 30);
+        let text = row_text(&buffer, row);
+        assert!(text.starts_with("> ") && text.contains("near the very end"));
+        assert!(!text.contains("misty"));
+    }
+
+    #[test]
+    fn gradients_play_at_eight_times_the_base_rate_by_default() {
+        let mut view = GradientView::new(&presets::presets()[1].recipe, Instant::now()).unwrap();
+        let mut speed = SpeedControl::new(BASE_SPEED);
+        speed.change(DEFAULT_SPEED_STEPS, &mut view).unwrap();
+        assert!((speed.multiplier() - 8.0).abs() < 1e-9);
+        // 8 times Jev's starting rate: the 1.2 radians per second the clock
+        // has always used.
+        assert!((BASE_SPEED * speed.multiplier() - 1.2).abs() < 1e-9);
+        // Up and Down still move it from there.
+        speed.change(1, &mut view).unwrap();
+        assert!(speed.multiplier() > 11.0 && speed.multiplier() < 11.4);
+    }
+
+    fn generated(recipe: amber::Recipe, radians_per_second: f64) -> GeneratedGradient {
+        GeneratedGradient {
+            recipe,
+            radians_per_second,
+            design: amber::generation::Design {
+                hues: ["blue".into(), "pink".into(), "amber".into()],
+                top: "blue".into(),
+                layout: amber::generation::Layout::Sky,
+                lightness: 2.0,
+                saturation: 2.0,
+                contrast: 1.5,
+                energy: 2.0,
+                focus: 1.5,
+            },
+            cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn a_generated_gradient_replaces_the_picture_and_keeps_the_chosen_speed() {
+        let mut view = GradientView::new(&presets::presets()[1].recipe, Instant::now()).unwrap();
+        let mut speed = SpeedControl::new(BASE_SPEED);
+        speed.change(DEFAULT_SPEED_STEPS, &mut view).unwrap();
+        let render = |view: &mut GradientView| {
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal.draw(|f| view.render(f, f.area())).unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let before = render(&mut view);
+
+        let gradient = generated(presets::presets()[0].recipe.clone(), 0.3);
+        apply(&mut view, &mut speed, &gradient).unwrap();
+        assert_ne!(render(&mut view), before);
+        // Still 8x, now of the rate Jev suggested for this gradient.
+        assert!((speed.multiplier() - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_description_stays_until_a_new_one_replaces_it() {
+        let mut prompt = Prompt::default();
+        assert!(!prompt.has_line());
+        prompt.begin();
+        assert!(prompt.has_line());
+
+        // Sending a description: it shows once the gradient has arrived.
+        prompt.paste("  a misty forest  ");
+        prompt.started();
+        assert_eq!(prompt.shown, None);
+        prompt.paste("x"); // typed while waiting
+        prompt.succeeded();
+        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+        assert!(!prompt.open && prompt.has_line());
+        assert_eq!(prompt.text, "");
+
+        // Opening the box again starts empty, and cancelling leaves the
+        // description on screen as it was.
+        prompt.begin();
+        assert!(prompt.open);
+        assert_eq!(prompt.text, "");
+        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+        prompt.paste("with fog");
+        prompt.cancel();
+        assert_eq!(prompt.text, "");
+        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+        assert!(!prompt.open && prompt.has_line());
+
+        // A failed request leaves the old gradient and description alone, and
+        // the box open with what was typed so it can be sent again.
+        prompt.begin();
+        prompt.paste("something else");
+        prompt.started();
+        prompt.failed();
+        assert!(prompt.open);
+        assert_eq!(prompt.text, "something else");
+        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+        assert_eq!(prompt.in_flight, None);
+
+        // A new description replaces it, and only then.
+        prompt.started();
+        prompt.succeeded();
+        assert_eq!(prompt.shown.as_deref(), Some("something else"));
+        assert_eq!(prompt.text, "");
+    }
+
+    #[test]
+    fn opening_the_box_always_starts_empty() {
+        let mut prompt = Prompt {
+            text: "left over".into(),
+            shown: Some("a quiet harbor".into()),
+            ..Prompt::default()
+        };
+        prompt.begin();
+        assert_eq!(prompt.text, "");
+        assert_eq!(prompt.shown.as_deref(), Some("a quiet harbor"));
+        // While the box is open and empty, the line is the empty edit box, not
+        // the description.
+        assert!(prompt.open && prompt.has_line());
+    }
+
+    #[test]
+    fn cancelling_with_nothing_shown_empties_the_box_and_the_line() {
+        let mut prompt = Prompt::default();
+        prompt.open = true;
+        prompt.paste("never sent");
+        prompt.cancel();
+        assert_eq!(prompt.text, "");
+        assert!(!prompt.has_line());
+        // A late arrival with nothing in flight changes nothing.
+        prompt.succeeded();
+        assert_eq!(prompt.shown, None);
+    }
+
+    #[test]
+    fn the_caption_shows_the_start_and_marks_where_it_is_cut() {
+        let with = |text: &str| Prompt {
+            shown: Some(text.into()),
+            ..Prompt::default()
+        };
+        assert_eq!(with("glacier ice").caption(40), "glacier ice");
+        assert_eq!(with("glacier ice").caption(11), "glacier ice");
+        let cut = with("glacier ice").caption(8);
+        assert_eq!(cut, "glacier…");
+        assert_eq!(cut.width(), 8);
+        // Wide characters are counted by columns, and never overrun them.
+        let wide = with("日本語の氷河").caption(7);
+        assert!(wide.width() <= 7 && wide.ends_with('…'), "{wide:?}");
+        assert_eq!(with("x").caption(0), "…");
+        assert_eq!(Prompt::default().caption(10), "");
+    }
+
+    #[test]
+    fn once_set_the_description_is_bare_centered_text_above_the_clock() {
+        let prompt = Prompt {
+            text: "misty forest".into(),
+            shown: Some("misty forest".into()),
+            ..Prompt::default()
+        };
+        assert!(!prompt.open && prompt.has_line());
+        let (buffer, digits, row) = draw(&prompt, 100, 30);
+        assert!(row.bottom() < digits.unwrap().y);
+
+        // No chevron, centered over the clock's width.
+        let text = row_text(&buffer, row);
+        let left = (row.width - 12) / 2;
+        assert!(!text.contains('>'));
+        assert_eq!(
+            text,
+            format!(
+                "{}misty forest{}",
+                "▀".repeat(left.into()),
+                "▀".repeat((row.width - 12 - left).into())
+            )
+        );
+        // No cursor. The gradient shows through darkened: flat under the text
+        // (both halves averaged), and still two-toned in the padding around it.
+        let text_cells = row.x + left..row.x + left + 12;
+        let shade = |color: Color| match color {
+            Color::Rgb(r, ..) => r,
+            _ => panic!("{color:?}"),
+        };
+        for x in text_cells.clone() {
+            let cell = &buffer[(x, row.y)];
+            assert!(!cell.modifier.contains(Modifier::REVERSED));
+            assert!(shade(cell.bg) > 0 && shade(cell.bg) < 100, "column {x}");
+        }
+        assert_eq!(buffer[(text_cells.start, row.y)].fg, Color::White);
+        assert!(
+            buffer[(text_cells.start, row.y)]
+                .modifier
+                .contains(Modifier::BOLD)
+        );
+        // The padding is dimmed but still half blocks.
+        let pad = SCRIM_PADDING;
+        for x in [
+            text_cells.start - 1,
+            text_cells.start - pad,
+            text_cells.end,
+            text_cells.end + pad - 1,
+        ] {
+            let cell = &buffer[(x, row.y)];
+            assert_eq!(cell.symbol(), "▀", "column {x}");
+            assert!(shade(cell.fg) > 0 && shade(cell.fg) < 100, "column {x}");
+        }
+        // Past the padding nothing has changed.
+        for x in [text_cells.start - pad - 1, text_cells.end + pad] {
+            let cell = &buffer[(x, row.y)];
+            assert_eq!(
+                (cell.symbol(), cell.fg, cell.bg),
+                ("▀", GREY, GREY),
+                "column {x}"
+            );
+        }
+
+        // A long description is cut at the end with an ellipsis.
+        let long = Prompt {
+            shown: Some("a misty forest at dawn ".repeat(8)),
+            ..Prompt::default()
+        };
+        let (buffer, _, row) = draw(&long, 100, 30);
+        let text = row_text(&buffer, row);
+        assert!(text.starts_with("a misty forest at dawn"));
+        // Cut to fill the clock's width, with the ellipsis as its last character.
+        assert!(text.ends_with("…") && !text.contains('▀'), "{text:?}");
+    }
+
+    #[test]
+    fn the_caption_is_centered_on_a_scrim_and_flattens_only_the_cells_under_the_text() {
+        let area = Rect::new(0, 0, 30, 3);
+        let (top, bottom) = (Color::Rgb(40, 60, 90), Color::Rgb(100, 140, 200));
+        let mut buffer = Buffer::empty(area);
+        for cell in &mut buffer.content {
+            cell.set_char('▀').set_fg(top).set_bg(bottom);
+        }
+        // "ab cd" is 5 wide in a row of 20 starting at column 2: it starts at 9.
+        draw_caption(&mut buffer, Rect::new(2, 1, 20, 1), "ab cd");
+        assert_eq!(row_text(&buffer, Rect::new(9, 1, 5, 1)), "ab cd");
+
+        let rgb = |color: Color| match color {
+            Color::Rgb(r, g, b) => [r, g, b],
+            _ => panic!("{color:?}"),
+        };
+        let darker = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(a, b)| *a < b);
+        // Under the letters and the space, one flat color: darker than both
+        // original halves' average.
+        let flat = rgb(buffer[(9, 1)].bg);
+        for x in 9..14 {
+            assert_eq!(rgb(buffer[(x, 1)].bg), flat, "column {x}");
+        }
+        assert!(darker(flat, [70, 100, 145]));
+        // In the padding both halves are kept and both are darker.
+        for x in [7, 8, 14, 15] {
+            let cell = &buffer[(x, 1)];
+            assert_eq!(cell.symbol(), "▀");
+            assert!(darker(rgb(cell.fg), [40, 60, 90]) && darker(rgb(cell.bg), [100, 140, 200]));
+            assert_ne!(cell.fg, cell.bg);
+        }
+        // Beyond the padding, and on other rows, nothing changed.
+        for (x, y) in [(6, 1), (16, 1), (2, 1), (21, 1), (9, 0), (9, 2)] {
+            let cell = &buffer[(x, y)];
+            assert_eq!(
+                (cell.symbol(), cell.fg, cell.bg),
+                ("▀", top, bottom),
+                "({x}, {y})"
+            );
+        }
+        // Text longer than the row is cut to it, and the scrim stops at the
+        // buffer's edge. A row off the buffer, or empty text, is ignored.
+        draw_caption(&mut buffer, Rect::new(26, 0, 4, 1), "something long");
+        assert_eq!(row_text(&buffer, Rect::new(26, 0, 4, 1)), "some");
+        draw_caption(&mut buffer, Rect::new(0, 9, 5, 1), "off");
+        let before = buffer.clone();
+        draw_caption(&mut buffer, Rect::new(0, 2, 10, 1), "");
+        assert_eq!(buffer, before);
     }
 }
