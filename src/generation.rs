@@ -1,6 +1,11 @@
 //! Jev makes bounded design decisions; local code builds a validated recipe.
 //! No network requests are made by the renderer or by `GradientView`.
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::mpsc::{self, Receiver},
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -123,6 +128,117 @@ impl JevClient {
                 .and_then(|usage| usage.cost)
                 .filter(|cost| cost.is_finite() && *cost >= 0.0),
         })
+    }
+}
+
+type Pending = (Instant, Receiver<Result<GeneratedGradient, String>>);
+
+/// Runs [`JevClient::generate`] on a worker thread so a host's event loop never
+/// blocks, and remembers recent results so repeating a prompt costs nothing.
+///
+/// Call [`submit`](Self::submit) when the user asks for a gradient and
+/// [`poll`](Self::poll) from the event loop; while
+/// [`is_pending`](Self::is_pending) the loop should wake every few
+/// milliseconds to poll. [`status`](Self::status) is a line of text a host can
+/// show next to its prompt. The client is created from the environment and a
+/// `.env` file in the working directory, as [`JevClient::from_env`] does.
+pub struct Generator {
+    pending: Option<Pending>,
+    submitted: String,
+    cache: BTreeMap<String, GeneratedGradient>,
+    status: String,
+}
+
+impl Default for Generator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Generator {
+    pub fn new() -> Self {
+        Self {
+            pending: None,
+            submitted: String::new(),
+            cache: BTreeMap::new(),
+            status: "Try: glacier ice, a sunset over the sea, or a quiet forest".into(),
+        }
+    }
+
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Whether a request is in flight and [`poll`](Self::poll) should be called.
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Ask for a gradient. A prompt already answered this session returns its
+    /// gradient immediately; otherwise a request starts and the result arrives
+    /// through [`poll`](Self::poll). Does nothing while a request is in flight
+    /// or if the prompt is empty.
+    pub fn submit(&mut self, prompt: &str) -> Option<GeneratedGradient> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            self.status = "Describe a gradient first".into();
+            return None;
+        }
+        self.submitted = prompt.clone();
+        if let Some(cached) = self.cache.get(&prompt.to_lowercase()) {
+            self.status = "Loaded cached gradient".into();
+            return Some(cached.clone());
+        }
+        let (send, receive) = mpsc::channel();
+        self.status = "Jev is choosing colors, layout, and movement…".into();
+        match std::thread::Builder::new()
+            .name("jev-generation".into())
+            .spawn(move || {
+                let result = JevClient::from_env(Path::new(".env"))
+                    .and_then(|client| client.generate(&prompt));
+                let _ = send.send(result);
+            }) {
+            Ok(_) => self.pending = Some((Instant::now(), receive)),
+            Err(_) => self.status = "Could not start generation worker".into(),
+        }
+        None
+    }
+
+    /// The finished request's result, once, or `None` if there is nothing new.
+    /// Updates [`status`](Self::status) either way.
+    pub fn poll(&mut self) -> Option<Result<GeneratedGradient, String>> {
+        let (start, receive) = self.pending.as_ref()?;
+        let result = match receive.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Generation worker stopped unexpectedly".into())
+            }
+        };
+        match &result {
+            Ok(gradient) => {
+                self.status = format!(
+                    "Generated in {:.1}s · {} / {} / {} · {:?}",
+                    start.elapsed().as_secs_f64(),
+                    gradient.design.hues[0],
+                    gradient.design.hues[1],
+                    gradient.design.hues[2],
+                    gradient.design.layout
+                );
+                // Bound session memory; repeated prompts do not need another API call.
+                if self.cache.len() >= 32 {
+                    self.cache.clear();
+                }
+                self.cache
+                    .insert(self.submitted.to_lowercase(), gradient.clone());
+            }
+            Err(message) => self.status = format!("{message} · Enter to retry"),
+        }
+        self.pending = None;
+        Some(result)
     }
 }
 
@@ -544,5 +660,41 @@ mod tests {
         assert!(error.contains("API key"));
         assert!(!error.contains("sensitive"));
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn in_flight_submission_does_not_create_a_second_worker() {
+        let mut generator = Generator::new();
+        let (_send, receive) = mpsc::channel();
+        generator.pending = Some((Instant::now(), receive));
+        assert!(generator.is_pending());
+        assert!(generator.submit("another prompt").is_none());
+        assert!(generator.is_pending());
+        assert!(generator.poll().is_none());
+    }
+
+    #[test]
+    fn generation_errors_complete_without_replacing_the_view() {
+        let mut generator = Generator::new();
+        let (send, receive) = mpsc::channel();
+        generator.pending = Some((Instant::now(), receive));
+        send.send(Err("Test failure".into())).unwrap();
+        assert!(generator.poll().unwrap().is_err());
+        assert!(!generator.is_pending());
+        assert!(generator.status().contains("Enter to retry"));
+    }
+
+    #[test]
+    fn empty_prompts_start_nothing_and_a_stopped_worker_is_reported() {
+        let mut generator = Generator::new();
+        assert!(generator.submit("   ").is_none());
+        assert!(!generator.is_pending());
+        assert!(generator.status().contains("Describe a gradient"));
+
+        let (send, receive) = mpsc::channel();
+        drop(send);
+        generator.pending = Some((Instant::now(), receive));
+        assert!(generator.poll().unwrap().is_err());
+        assert!(generator.status().contains("stopped unexpectedly"));
     }
 }

@@ -1,14 +1,12 @@
 use std::{
-    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
     time::{Duration, Instant},
 };
 
 use amber::{
     GradientView,
-    generation::{GeneratedGradient, JevClient},
+    generation::{GeneratedGradient, Generator, JevClient},
     presets,
 };
 use crossterm::{
@@ -131,87 +129,6 @@ fn run() -> io::Result<()> {
     interactive(options.prompt)
 }
 
-type Pending = (Instant, Receiver<Result<GeneratedGradient, String>>);
-
-struct Generator {
-    pending: Option<Pending>,
-    submitted: String,
-    cache: BTreeMap<String, GeneratedGradient>,
-    status: String,
-}
-
-impl Generator {
-    fn new() -> Self {
-        Self {
-            pending: None,
-            submitted: String::new(),
-            cache: BTreeMap::new(),
-            status: "Try: glacier ice, a sunset over the sea, or a quiet forest".into(),
-        }
-    }
-
-    fn submit(&mut self, prompt: &str) -> Option<GeneratedGradient> {
-        if self.pending.is_some() {
-            return None;
-        }
-        let prompt = prompt.trim().to_string();
-        if prompt.is_empty() {
-            self.status = "Describe a gradient first".into();
-            return None;
-        }
-        self.submitted = prompt.clone();
-        if let Some(cached) = self.cache.get(&prompt.to_lowercase()) {
-            self.status = "Loaded cached gradient".into();
-            return Some(cached.clone());
-        }
-        let (send, receive) = mpsc::channel();
-        self.status = "Jev is choosing colors, layout, and movement…".into();
-        match std::thread::Builder::new()
-            .name("jev-generation".into())
-            .spawn(move || {
-                let result = JevClient::from_env(Path::new(".env"))
-                    .and_then(|client| client.generate(&prompt));
-                let _ = send.send(result);
-            }) {
-            Ok(_) => self.pending = Some((Instant::now(), receive)),
-            Err(_) => self.status = "Could not start generation worker".into(),
-        }
-        None
-    }
-
-    fn poll(&mut self) -> Option<Result<GeneratedGradient, String>> {
-        let (start, receive) = self.pending.as_ref()?;
-        let result = match receive.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) => return None,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("Generation worker stopped unexpectedly".into())
-            }
-        };
-        match &result {
-            Ok(gradient) => {
-                self.status = format!(
-                    "Generated in {:.1}s · {} / {} / {} · {:?}",
-                    start.elapsed().as_secs_f64(),
-                    gradient.design.hues[0],
-                    gradient.design.hues[1],
-                    gradient.design.hues[2],
-                    gradient.design.layout
-                );
-                // Bound session memory; repeated prompts do not need another API call.
-                if self.cache.len() >= 32 {
-                    self.cache.clear();
-                }
-                self.cache
-                    .insert(self.submitted.to_lowercase(), gradient.clone());
-            }
-            Err(message) => self.status = format!("{message} · Enter to retry"),
-        }
-        self.pending = None;
-        Some(result)
-    }
-}
-
 fn apply(
     view: &mut GradientView,
     gradient: &GeneratedGradient,
@@ -271,7 +188,7 @@ fn interactive(mut prompt: String) -> io::Result<()> {
                         Paragraph::new(format!(
                             "Speed {:.2}x · {}",
                             speed.multiplier(),
-                            generator.status
+                            generator.status()
                         ))
                         .style(style),
                         status,
@@ -283,10 +200,7 @@ fn interactive(mut prompt: String) -> io::Result<()> {
                 redraw = false;
             }
             // A pending request must be polled even when the gradient is paused.
-            let timeout = match (
-                view.wait_duration(Instant::now()),
-                generator.pending.is_some(),
-            ) {
+            let timeout = match (view.wait_duration(Instant::now()), generator.is_pending()) {
                 (Some(delay), true) => Some(delay.min(Duration::from_millis(25))),
                 (None, true) => Some(Duration::from_millis(25)),
                 (delay, false) => delay,
@@ -393,26 +307,5 @@ mod tests {
         assert!(options(args(&["--output", "ice.json"])).is_err());
         assert!(options(args(&["--prompt"])).is_err());
         assert!(options(args(&["--unknown"])).is_err());
-    }
-
-    #[test]
-    fn in_flight_submission_does_not_create_a_second_worker() {
-        let mut generator = Generator::new();
-        let (_send, receive) = mpsc::channel();
-        generator.pending = Some((Instant::now(), receive));
-        assert!(generator.submit("another prompt").is_none());
-        assert!(generator.pending.is_some());
-        assert!(generator.poll().is_none());
-    }
-
-    #[test]
-    fn generation_errors_complete_without_replacing_the_view() {
-        let mut generator = Generator::new();
-        let (send, receive) = mpsc::channel();
-        generator.pending = Some((Instant::now(), receive));
-        send.send(Err("Test failure".into())).unwrap();
-        assert!(generator.poll().unwrap().is_err());
-        assert!(generator.pending.is_none());
-        assert!(generator.status.contains("Enter to retry"));
     }
 }
