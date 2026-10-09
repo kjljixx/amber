@@ -191,12 +191,11 @@ impl Generator {
         match &result {
             Ok(gradient) => {
                 self.status = format!(
-                    "Generated in {:.1}s · {} / {} / {} · {:?}",
+                    "Generated in {:.1}s · {} / {} / {}",
                     start.elapsed().as_secs_f64(),
-                    gradient.design.hues[0],
-                    gradient.design.hues[1],
-                    gradient.design.hues[2],
-                    gradient.design.layout
+                    String::from(gradient.composition.colors.sky.clone()),
+                    String::from(gradient.composition.colors.horizon.clone()),
+                    String::from(gradient.composition.colors.ground.clone()),
                 );
                 // Bound session memory; repeated prompts do not need another API call.
                 if self.cache.len() >= 32 {

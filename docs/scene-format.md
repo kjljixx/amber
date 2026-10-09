@@ -120,7 +120,7 @@ windows are `lights` over dark `strokes`.
 
 ## The original layouts
 
-`Design::to_recipe` (Jev's decisions) builds a scene with a `grid` element: its
-three hues become the roles `main`, `second` and `accent`, and the prompt seeds
-`variation`. Output is identical to the layouts before scenes existed; the random
-draws happen in the same order.
+The `grid` element keeps the eighteen-point layouts Jev used before
+[compositions](composition-format.md): its three hues are the roles `main`,
+`second` and `accent`. Output is identical to those layouts; the random draws
+happen in the same order. Compositions use them for descriptions that are a feeling rather than a place.

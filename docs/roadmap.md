@@ -21,9 +21,10 @@ of the warp that point feels.
 
 ## Other deferred ideas
 
-- **Jev scene picking:** let Jev choose a bundled scene and a color per
-  palette role instead of one of six layouts. The scenes, roles and `variation`
-  seed already exist; what is missing is the decision request and parsing.
+- **More composition parts:** stars as their own part, waves, clouds.
+- **Tune the parts, not scenes:** defaults for each part (feature height,
+  bloom, ridge contrast) are shared by every prompt, so improvements there lift
+  everything. The bundled scenes remain the reference for how good it can get.
 - **More elements:** soft clouds or blobs, stars, a ground plane, and
   rows of repeated shapes (fences, waves). Each is one variant in
   `src/scene/elements.rs`.

@@ -26,20 +26,21 @@ the generator UI, but remains separate from the recipe format.
 ```text
 description
     → one Jev Decisions API request
-    → color families, top color, layout, lightness, saturation,
-      contrast, energy, and edge softness
-    → local deterministic composition with 18 color points
-    → validated Recipe
+    → five color families, lights_at, and scores for what is in the
+      picture and the overall look
+    → Composition (see composition-format.md)
+    → deterministic Scene, then validated Recipe
     → GradientView
 ```
 
 Jev chooses bounded values rather than writing JSON coordinates or rendering
-code. Palette conversion and point placement happen locally. Six layouts are
-available: sky, horizon, glow, scatter, superscatter, and wash. Superscatter uses
-18 irregularly spaced points (9 primary, 6 secondary, 3 accent), spreads the
-color families throughout the image, and reduces softness to keep smaller pockets visible. The website uses this same
-decision-to-composition approach; our point placement is adapted for this renderer.
-No prism, grain, zoom, or seed randomization is added. Seed stays 58.
+code. Its answers describe generic parts of a picture (sky, land, upright
+features, beams, lights, one big glow, haze) and local code turns them into
+points. No scenes are named: different pictures are different answers to the
+same questions. Descriptions that are a feeling rather than a place skip
+the scene and use one of six broad color layouts (sky, horizon, glow,
+scatter, superscatter, wash). The prompt seeds the random placement, so the same prompt and
+answers always give the same picture. Seed stays 58.
 
 The network request runs on a worker thread with a 20-second timeout. The old
 gradient keeps animating while it is pending. Failures preserve the old recipe
@@ -51,8 +52,8 @@ Requests are billed to the configured OpenRouter account; tests use local mocks.
 
 `amber::generation::JevClient` is separate from the renderer. A host can construct
 it with its own key and model, then call `generate(description)` on a worker.
-The result exposes the validated recipe, design decisions, playback speed, and
-optional API-reported cost. Configuration loading is explicit; the library never
+The result exposes the validated recipe, the `Composition` Jev decided on,
+playback speed, and optional API-reported cost. Configuration loading is explicit; the library never
 reads `.env` merely because it is imported. Credentials are not included in
 debug output or server-error messages.
 

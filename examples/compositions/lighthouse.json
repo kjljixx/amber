@@ -1,0 +1,3 @@
+{"colors":{"sky":"#0b1030","horizon":"#3a4a8a","ground":"#101a3a","feature":"#05070f","light":"#fff0b0"},
+ "horizon_height":3,"land":1,"features":1,"feature_width":0,"lights":1,"light_size":0,"lights_at":"sky","light_glow":2,"glow":3,"glow_height":2,"rays":1,"atmosphere":3,
+ "style":{"lightness":0.8,"saturation":2.0,"contrast":2.0,"energy":1.0,"focus":1.5}}
