@@ -220,7 +220,7 @@ mod tests {
             );
         }
         let mut value = original.clone();
-        value["points"][0]["position"] = serde_json::json!([-0.1, 0.5]);
+        value["points"][0]["position"] = serde_json::json!([-0.6, 0.5]);
         assert!(
             serde_json::from_value::<Recipe>(value)
                 .unwrap()

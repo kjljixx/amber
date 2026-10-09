@@ -9,7 +9,7 @@ All fields except `motion_style`, `warp`, and the optional `points[]` shape fiel
 | Field | Meaning | Allowed values |
 | --- | --- | --- |
 | `points` | Color centers | 2–256 objects |
-| `points[].position` | `[x, y]`, from top-left to bottom-right | Each coordinate 0–1 |
+| `points[].position` | `[x, y]`, from top-left to bottom-right; points outside 0–1 sit off the image | Each coordinate −0.5–1.5 |
 | `points[].color` | sRGB `[red, green, blue]` | Each channel an integer 0–255 |
 | `points[].radius` | Optional width and edge softness of this point's region; defaults to `1` | 0.05–10 |
 | `points[].stretch` | Optional elongation of the region along its long axis; defaults to `1` | 0.1–10 |

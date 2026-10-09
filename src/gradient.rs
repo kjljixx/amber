@@ -8,6 +8,8 @@ const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.05..=10.0;
 const STRETCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
 const STRENGTH_RANGE: std::ops::RangeInclusive<f32> = 0.05..=20.0;
 const ANGLE_RANGE: std::ops::RangeInclusive<f32> = -180.0..=180.0;
+/// Points may sit past the edges so shapes can run off the image.
+const POSITION_RANGE: std::ops::RangeInclusive<f32> = -0.5..=1.5;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -115,9 +117,9 @@ impl Gradient {
             point
                 .position
                 .iter()
-                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+                .any(|value| !POSITION_RANGE.contains(value))
         }) {
-            return Err("point coordinates must be finite and between 0 and 1");
+            return Err("point coordinates must be finite and between -0.5 and 1.5");
         }
         if points
             .iter()
@@ -613,6 +615,28 @@ mod tests {
         for (x, y) in [(0.5, 0.65), (0.65, 0.5), (0.6, 0.6), (0.4, 0.45)] {
             assert!(round.sample(x, y)[0].abs_diff(turned.sample(x, y)[0]) <= 1);
         }
+    }
+
+    #[test]
+    fn points_may_sit_off_the_image_within_limits() {
+        let at = |x: f32, y: f32| {
+            Gradient::new(
+                &[
+                    Point::new([x, y], [255, 255, 255]),
+                    Point::new([0.5, 0.5], [0, 0, 0]),
+                ],
+                0.5,
+            )
+        };
+        assert!(at(-0.5, 1.5).is_ok());
+        assert!(at(1.5, -0.5).is_ok());
+        for bad in [-0.51, 1.51, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(at(bad, 0.5).is_err(), "x {bad}");
+            assert!(at(0.5, bad).is_err(), "y {bad}");
+        }
+        // A point past the edge still pulls the visible image toward its color.
+        let field = at(-0.3, 0.5).unwrap().prepare(1.0);
+        assert!(field.sample(0.0, 0.5)[0] > field.sample(0.5, 0.2)[0]);
     }
 
     #[test]

@@ -31,8 +31,6 @@ of the warp that point feels.
   color level.
 - **Point limit as a validation constant:** drop the fixed `[f32; MAX_POINTS]`
   stack array in `sample()` and keep only a generous load-time limit.
-- **Off-canvas positions:** allow roughly -0.5 to 1.5 so ridges and trunks can
-  continue past the edge.
 - **Jev scene picking:** choose a scene template and colors per palette role
   instead of one of six layouts. Derive the warp seed from the prompt hash;
   generated recipes all use seed 58 today.
