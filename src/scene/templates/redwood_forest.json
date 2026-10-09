@@ -52,74 +52,84 @@
       ]
     },
     {
-      "type": "columns",
+      "type": "strokes",
       "role": "trunk",
       "count": 14,
       "x": [
         -0.05,
         1.05
       ],
-      "y": 0.55,
-      "height": [
+      "y": [
+        0.55,
+        0.55
+      ],
+      "length": [
         7,
         10
       ],
       "width": 0.1,
+      "taper": 0.3,
       "depth": [
         0.6,
         0.9
       ],
-      "taper": 0.3,
-      "lean": 1.5,
-      "shade": -0.3
+      "shade": -0.3,
+      "angle_jitter": 1.5
     },
     {
-      "type": "columns",
+      "type": "strokes",
       "role": "trunk",
       "count": 7,
       "x": [
         0.0,
         1.0
       ],
-      "y": 0.55,
-      "height": [
+      "y": [
+        0.55,
+        0.55
+      ],
+      "length": [
         7,
         10
       ],
       "width": 0.16,
+      "taper": 0.3,
       "depth": [
         0.3,
         0.5
       ],
-      "taper": 0.3,
-      "lean": 1.5,
-      "shade": -0.4
+      "shade": -0.4,
+      "angle_jitter": 1.5
     },
     {
-      "type": "columns",
+      "type": "strokes",
       "role": "trunk",
       "count": 3,
       "x": [
         0.1,
         0.9
       ],
-      "y": 0.55,
-      "height": [
+      "y": [
+        0.55,
+        0.55
+      ],
+      "length": [
         7,
         10
       ],
       "width": 0.3,
+      "taper": 0.2,
       "depth": [
         0.0,
         0.1
       ],
-      "taper": 0.2,
-      "lean": 1.0,
-      "shade": -0.5
+      "shade": -0.5,
+      "angle_jitter": 1.0
     },
     {
-      "type": "shafts",
+      "type": "strokes",
       "role": "light",
+      "arrange": "scatter",
       "count": 3,
       "x": [
         0.1,
@@ -129,10 +139,20 @@
         0.2,
         0.6
       ],
+      "length": [
+        8,
+        8
+      ],
       "width": 0.08,
-      "depth": 0.3,
+      "angle": 28,
+      "angle_jitter": 4,
+      "depth": [
+        0.3,
+        0.3
+      ],
       "shade": 0.4,
-      "strength": 1.2
+      "strength": 1.2,
+      "taper": 0
     }
   ],
   "variation": 11,

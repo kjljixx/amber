@@ -30,6 +30,36 @@ pub struct LightRole {
     pub weight: f32,
 }
 
+/// Light spilling into the space around each light: concentric points that
+/// grow wider, weaker and closer to the haze color, so the glow fades smoothly
+/// into whatever is behind it.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bloom {
+    /// Number of concentric points around each light.
+    #[serde(default = "bloom_rings")]
+    pub rings: u32,
+    /// Radius growth per ring, as a multiple of the previous ring.
+    #[serde(default = "bloom_spread")]
+    pub spread: f32,
+    /// Pull of the innermost ring. Keep it well below the backdrop's, or the
+    /// glow takes over instead of tinting.
+    #[serde(default = "bloom_strength")]
+    pub strength: f32,
+    /// Each ring's strength as a fraction of the one inside it.
+    #[serde(default = "bloom_fade")]
+    pub fade: f32,
+}
+
+/// How `strokes` are placed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrange {
+    #[default]
+    Row,
+    Scatter,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Element {
@@ -117,32 +147,40 @@ pub enum Element {
         #[serde(default = "yes")]
         follow: bool,
     },
-    /// Upright shapes like trunks, poles or buildings, spread along `x`.
-    Columns {
+    /// Elongated soft marks: trunks, poles, buildings, beams of light. Each is
+    /// a stretched point; `angle` leans it away from upright.
+    Strokes {
         role: String,
         count: u32,
+        /// `row` spaces them evenly along `x`, each at a random height in `y`;
+        /// `scatter` puts them at random anywhere in the box.
+        #[serde(default)]
+        arrange: Arrange,
         #[serde(default = "unit_range")]
         x: [f32; 2],
-        /// Vertical center of every column.
-        #[serde(default = "column_y")]
-        y: f32,
-        /// How far a column reaches vertically, as a multiple of `width`.
-        #[serde(default = "column_height")]
-        height: [f32; 2],
-        /// Thickness and edge softness of the nearest columns.
+        #[serde(default = "stroke_y")]
+        y: [f32; 2],
+        /// How far each reaches along its length, as a multiple of `width`.
+        #[serde(default = "stroke_length")]
+        length: [f32; 2],
+        /// Thickness and edge softness of the nearest strokes.
         #[serde(default = "quarter")]
         width: f32,
-        /// How much the farthest columns narrow (0 to 1).
+        /// How much the farthest strokes narrow (0 to 1).
         #[serde(default = "half")]
         taper: f32,
-        /// Each column draws its depth from this range.
+        /// Each stroke draws its depth from this range.
         #[serde(default)]
         depth: [f32; 2],
-        /// Largest random lean, in degrees.
+        /// Lean from upright, in degrees clockwise: 0 is vertical, 90 is
+        /// horizontal, and positive leans right.
+        #[serde(default)]
+        angle: f32,
+        /// Largest random change to `angle`, in degrees.
         #[serde(default = "two")]
-        lean: f32,
-        /// Position wobble, as a fraction of the spacing.
-        #[serde(default = "column_jitter")]
+        angle_jitter: f32,
+        /// Row position wobble, as a fraction of the spacing.
+        #[serde(default = "stroke_jitter")]
         jitter: f32,
         #[serde(default)]
         shade: f32,
@@ -151,31 +189,8 @@ pub enum Element {
         #[serde(default = "one")]
         strength: f32,
     },
-    /// Slanted streaks of light.
-    Shafts {
-        role: String,
-        count: u32,
-        #[serde(default = "shaft_x")]
-        x: [f32; 2],
-        #[serde(default = "shaft_y")]
-        y: [f32; 2],
-        #[serde(default = "shaft_angle")]
-        angle: f32,
-        #[serde(default = "four")]
-        angle_jitter: f32,
-        /// Streak length, as a multiple of `width`.
-        #[serde(default = "eight")]
-        length: f32,
-        #[serde(default = "shaft_width")]
-        width: f32,
-        #[serde(default = "shaft_shade")]
-        shade: f32,
-        #[serde(default)]
-        depth: f32,
-        #[serde(default = "shaft_strength")]
-        strength: f32,
-    },
-    /// Many small bright points, spread apart: windows, stars, lanterns.
+    /// Soft glowing patches, spread apart: windows, stars, lanterns. Keep them
+    /// few and soft; many small saturated dots read as confetti, not light.
     Lights {
         count: u32,
         roles: Vec<LightRole>,
@@ -191,6 +206,16 @@ pub enum Element {
         shade: [f32; 2],
         #[serde(default)]
         depth: f32,
+        /// A smaller, brighter point inside each light, as a multiple of its
+        /// radius (0 for none), so it glows toward the center instead of being
+        /// one flat color.
+        #[serde(default)]
+        core: f32,
+        /// How much lighter the core is than its light.
+        #[serde(default = "core_shade")]
+        core_shade: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bloom: Option<Bloom>,
     },
 }
 
@@ -203,14 +228,8 @@ fn two() -> f32 {
 fn three() -> f32 {
     3.0
 }
-fn four() -> f32 {
-    4.0
-}
 fn six() -> f32 {
     6.0
-}
-fn eight() -> f32 {
-    8.0
 }
 fn half() -> f32 {
     0.5
@@ -257,44 +276,41 @@ fn ridge_inset() -> f32 {
 fn ridge_radius() -> f32 {
     0.5
 }
-fn column_y() -> f32 {
-    0.6
+fn stroke_y() -> [f32; 2] {
+    [0.6, 0.6]
 }
-fn column_height() -> [f32; 2] {
+fn stroke_length() -> [f32; 2] {
     [4.0, 6.0]
 }
-fn column_jitter() -> f32 {
+fn stroke_jitter() -> f32 {
     0.6
-}
-fn shaft_x() -> [f32; 2] {
-    [0.1, 0.9]
-}
-fn shaft_y() -> [f32; 2] {
-    [0.15, 0.55]
-}
-fn shaft_angle() -> f32 {
-    -62.0
-}
-fn shaft_width() -> f32 {
-    0.07
-}
-fn shaft_shade() -> f32 {
-    0.6
-}
-fn shaft_strength() -> f32 {
-    1.5
 }
 fn lights_y() -> [f32; 2] {
     [0.6, 1.0]
 }
 fn lights_radius() -> [f32; 2] {
-    [0.06, 0.11]
+    [0.08, 0.14]
 }
 fn lights_strength() -> f32 {
-    6.0
+    2.0
 }
 fn lights_shade() -> [f32; 2] {
-    [0.4, 0.9]
+    [0.2, 0.8]
+}
+fn core_shade() -> f32 {
+    0.3
+}
+fn bloom_rings() -> u32 {
+    3
+}
+fn bloom_spread() -> f32 {
+    1.9
+}
+fn bloom_strength() -> f32 {
+    0.3
+}
+fn bloom_fade() -> f32 {
+    0.5
 }
 
 fn role(palette: &BTreeMap<String, ColorSpec>, name: &str) -> Result<(), String> {
@@ -328,8 +344,7 @@ impl Element {
             Self::Point { .. } => "point",
             Self::Gradient { .. } => "gradient",
             Self::Ridge { .. } => "ridge",
-            Self::Columns { .. } => "columns",
-            Self::Shafts { .. } => "shafts",
+            Self::Strokes { .. } => "strokes",
             Self::Lights { .. } => "lights",
         }
     }
@@ -420,62 +435,38 @@ impl Element {
                 check("shade_jitter", *shade_jitter, 0.0, 1.0)?;
                 check("depth", *depth, 0.0, 1.0)?;
             }
-            Self::Columns {
+            Self::Strokes {
                 role: name,
                 count,
                 x,
                 y,
-                height,
+                length,
                 width,
                 taper,
                 depth,
-                lean,
+                angle,
+                angle_jitter,
                 jitter,
                 shade,
                 shade_jitter,
                 strength,
+                ..
             } => {
                 role(palette, name)?;
                 if !(1..=64).contains(count) {
                     return Err("count must be between 1 and 64".into());
                 }
                 ordered("x", *x, -0.5, 1.5)?;
-                check("y", *y, -0.5, 1.5)?;
-                ordered("height", *height, 1.0, 10.0)?;
+                ordered("y", *y, -0.5, 1.5)?;
+                ordered("length", *length, 1.0, 10.0)?;
                 check("width", *width, 0.05, 2.0)?;
                 check("taper", *taper, 0.0, 1.0)?;
                 ordered("depth", *depth, 0.0, 1.0)?;
-                check("lean", *lean, 0.0, 30.0)?;
+                check("angle", *angle, -90.0, 90.0)?;
+                check("angle_jitter", *angle_jitter, 0.0, 45.0)?;
                 check("jitter", *jitter, 0.0, 1.0)?;
                 check("shade", *shade, -2.0, 2.0)?;
                 check("shade_jitter", *shade_jitter, 0.0, 1.0)?;
-                check("strength", *strength, 0.05, 20.0)?;
-            }
-            Self::Shafts {
-                role: name,
-                count,
-                x,
-                y,
-                angle,
-                angle_jitter,
-                length,
-                width,
-                shade,
-                depth,
-                strength,
-            } => {
-                role(palette, name)?;
-                if !(1..=24).contains(count) {
-                    return Err("count must be between 1 and 24".into());
-                }
-                ordered("x", *x, -0.5, 1.5)?;
-                ordered("y", *y, -0.5, 1.5)?;
-                check("angle", *angle, -180.0, 180.0)?;
-                check("angle_jitter", *angle_jitter, 0.0, 45.0)?;
-                check("length", *length, 1.0, 10.0)?;
-                check("width", *width, 0.05, 1.0)?;
-                check("shade", *shade, -2.0, 2.0)?;
-                check("depth", *depth, 0.0, 1.0)?;
                 check("strength", *strength, 0.05, 20.0)?;
             }
             Self::Lights {
@@ -487,6 +478,9 @@ impl Element {
                 strength,
                 shade,
                 depth,
+                core,
+                core_shade,
+                bloom,
             } => {
                 if !(1..=200).contains(count) {
                     return Err("count must be between 1 and 200".into());
@@ -504,6 +498,18 @@ impl Element {
                 check("strength", *strength, 0.05, 20.0)?;
                 ordered("shade", *shade, -2.0, 2.0)?;
                 check("depth", *depth, 0.0, 1.0)?;
+                if *core != 0.0 {
+                    check("core", *core, 0.2, 0.9)?;
+                }
+                check("core_shade", *core_shade, -2.0, 2.0)?;
+                if let Some(bloom) = bloom {
+                    if !(1..=4).contains(&bloom.rings) {
+                        return Err("bloom rings must be between 1 and 4".into());
+                    }
+                    check("bloom spread", bloom.spread, 1.2, 3.0)?;
+                    check("bloom strength", bloom.strength, 0.02, 2.0)?;
+                    check("bloom fade", bloom.fade, 0.1, 1.0)?;
+                }
             }
         }
         Ok(())
@@ -615,72 +621,52 @@ impl Element {
                     );
                 }
             }
-            Self::Columns {
+            Self::Strokes {
                 role,
                 count,
+                arrange,
                 x,
                 y,
-                height,
+                length,
                 width,
                 taper,
                 depth,
-                lean,
+                angle,
+                angle_jitter,
                 jitter,
                 shade,
                 shade_jitter,
                 strength,
             } => {
-                let spacing = (x[1] - x[0]) / *count as f32;
+                let slot = (x[1] - x[0]) / *count as f32;
                 for index in 0..*count {
-                    let at = x[0]
-                        + (index as f32 + 0.5) * spacing
-                        + (ctx.random() - 0.5) * jitter * spacing;
-                    // 0 for the nearest column and 1 for the farthest.
+                    let (at, top) = match arrange {
+                        Arrange::Row => (
+                            x[0] + (index as f32 + 0.5) * slot
+                                + (ctx.random() - 0.5) * jitter * slot,
+                            y[0] + (y[1] - y[0]) * ctx.random(),
+                        ),
+                        Arrange::Scatter => (
+                            x[0] + (x[1] - x[0]) * ctx.random(),
+                            y[0] + (y[1] - y[0]) * ctx.random(),
+                        ),
+                    };
+                    // 0 for the nearest stroke and 1 for the farthest.
                     let far = ctx.random();
-                    let reach = height[0] + (height[1] - height[0]) * ctx.random();
-                    let tilt = (ctx.random() - 0.5) * 2.0 * lean;
+                    let reach = length[0] + (length[1] - length[0]) * ctx.random();
+                    let lean = angle + (ctx.random() - 0.5) * 2.0 * angle_jitter;
                     let shade = shade + (ctx.random() - 0.5) * 2.0 * shade_jitter;
                     ctx.emit(
-                        [at, *y],
+                        [at, top],
                         role,
                         shade,
                         depth[0] + (depth[1] - depth[0]) * far,
                         Shape {
-                            // Taper must not push a column below the smallest point radius.
+                            // Taper must not push a stroke below the smallest point radius.
                             radius: (width * (1.0 - taper * far)).max(0.05),
+                            // A tall region, leaned clockwise by `lean`.
                             stretch: 1.0 / reach,
-                            angle: tilt,
-                            strength: *strength,
-                        },
-                    );
-                }
-            }
-            Self::Shafts {
-                role,
-                count,
-                x,
-                y,
-                angle,
-                angle_jitter,
-                length,
-                width,
-                shade,
-                depth,
-                strength,
-            } => {
-                for _ in 0..*count {
-                    let at = x[0] + (x[1] - x[0]) * ctx.random();
-                    let top = y[0] + (y[1] - y[0]) * ctx.random();
-                    let angle = angle + (ctx.random() - 0.5) * 2.0 * angle_jitter;
-                    ctx.emit(
-                        [at, top],
-                        role,
-                        *shade,
-                        *depth,
-                        Shape {
-                            radius: *width,
-                            stretch: *length,
-                            angle,
+                            angle: lean,
                             strength: *strength,
                         },
                     );
@@ -695,6 +681,9 @@ impl Element {
                 strength,
                 shade,
                 depth,
+                core,
+                core_shade,
+                bloom,
             } => {
                 let positions = spread_points(*count as usize, *x, *y, 0.01, &mut || ctx.random());
                 let total: f32 = roles.iter().map(|light| light.weight).sum();
@@ -720,6 +709,37 @@ impl Element {
                             ..Shape::default()
                         },
                     );
+                    if *core > 0.0 {
+                        ctx.emit(
+                            position,
+                            &light.role,
+                            tone + core_shade,
+                            *depth,
+                            Shape {
+                                radius: (size * core).max(0.05),
+                                strength: *strength,
+                                ..Shape::default()
+                            },
+                        );
+                    }
+                    if let Some(bloom) = bloom {
+                        for ring in 1..=bloom.rings {
+                            let outward = ring as f32 / bloom.rings as f32;
+                            ctx.emit(
+                                position,
+                                &light.role,
+                                tone - 0.1 * ring as f32,
+                                // Outer rings blend into the haze, so the glow
+                                // dissolves into the surroundings.
+                                depth + (1.0 - depth) * outward,
+                                Shape {
+                                    radius: (size * bloom.spread.powi(ring as i32)).min(10.0),
+                                    strength: bloom.strength * bloom.fade.powi(ring as i32 - 1),
+                                    ..Shape::default()
+                                },
+                            );
+                        }
+                    }
                 }
             }
         }

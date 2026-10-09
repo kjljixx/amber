@@ -44,7 +44,11 @@ fn variation_changes_placement_but_not_the_design() {
     other.variation += 1;
     let (a, b) = (base.compile().unwrap(), other.compile().unwrap());
     assert_eq!(a.points.len(), b.points.len());
-    assert_ne!(a.points[20].position, b.points[20].position);
+    // The last points are lights, whose placement is random.
+    assert_ne!(
+        a.points.last().unwrap().position,
+        b.points.last().unwrap().position
+    );
 }
 
 #[test]
@@ -100,6 +104,8 @@ fn scene_json_rejects_mistakes() {
         r#"{"palette":{"a":"blue"},"elements":[],"stile":{}}"#,
         r#"{"palette":{"a":"blue"},"elements":[{"type":"point","position":[0,0],"role":"a","shad":1}]}"#,
         r#"{"palette":{"a":"blue"},"elements":[{"type":"hill"}]}"#,
+        r#"{"palette":{"a":"blue"},"elements":[{"type":"columns","role":"a","count":3}]}"#,
+        r#"{"palette":{"a":"blue"},"elements":[{"type":"strokes","role":"a","count":3,"arrange":"diagonal"}]}"#,
         r#"{"palette":{"a":"blue"},"style":{"brightness":2},"elements":[]}"#,
         r#"{"palette":{"a":"blue"},"haze":{"role":"a","strengh":1},"elements":[]}"#,
         r#"{"elements":[]}"#,
@@ -184,20 +190,47 @@ fn every_element_checks_its_ranges() {
             r#"{"type":"ridge","role":"a","y":0.5,"x":[1,0]}"#,
             "smaller value first",
         ),
-        (r#"{"type":"columns","role":"a","count":0}"#, "count"),
-        (r#"{"type":"columns","role":"a","count":65}"#, "count"),
+        (r#"{"type":"strokes","role":"a","count":0}"#, "count"),
+        (r#"{"type":"strokes","role":"a","count":65}"#, "count"),
         (
-            r#"{"type":"columns","role":"a","count":3,"height":[0,4]}"#,
-            "height",
+            r#"{"type":"strokes","role":"a","count":3,"length":[0,4]}"#,
+            "length",
         ),
         (
-            r#"{"type":"columns","role":"a","count":3,"depth":[0.8,0.2]}"#,
+            r#"{"type":"strokes","role":"a","count":3,"length":[8,4]}"#,
             "smaller value first",
         ),
-        (r#"{"type":"shafts","role":"a","count":25}"#, "count"),
         (
-            r#"{"type":"shafts","role":"a","count":2,"length":20}"#,
-            "length",
+            r#"{"type":"strokes","role":"a","count":3,"depth":[0.8,0.2]}"#,
+            "smaller value first",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"y":[0.9,0.1]}"#,
+            "smaller value first",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"angle":120}"#,
+            "angle",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"angle_jitter":60}"#,
+            "angle_jitter",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"width":0.01}"#,
+            "width",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"taper":2}"#,
+            "taper",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"jitter":2}"#,
+            "jitter",
+        ),
+        (
+            r#"{"type":"strokes","role":"a","count":3,"strength":0}"#,
+            "strength",
         ),
         (r#"{"type":"lights","count":5,"roles":[]}"#, "roles"),
         (
@@ -211,6 +244,38 @@ fn every_element_checks_its_ranges() {
         (
             r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"radius":[0.01,0.1]}"#,
             "radius",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"core":0.1}"#,
+            "core",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"core":1}"#,
+            "core",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"core_shade":3}"#,
+            "core_shade",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"bloom":{"rings":0}}"#,
+            "bloom rings",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"bloom":{"rings":5}}"#,
+            "bloom rings",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"bloom":{"spread":1}}"#,
+            "bloom spread",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"bloom":{"strength":0}}"#,
+            "bloom strength",
+        ),
+        (
+            r#"{"type":"lights","count":5,"roles":[{"role":"a"}],"bloom":{"fade":2}}"#,
+            "bloom fade",
         ),
         (r#"{"type":"grid","rule":"sky"}"#, "main, second and accent"),
     ] {
@@ -312,14 +377,14 @@ fn ridge_follows_a_crest_and_leans_with_its_slope() {
 }
 
 #[test]
-fn columns_are_tall_spread_and_taper_with_depth() {
+fn strokes_in_a_row_are_tall_spread_and_taper_with_depth() {
     let recipe = recipe_of(serde_json::json!([
-        {"type": "columns", "role": "a", "count": 8, "x": [0, 1], "y": 0.5,
-         "height": [4, 8], "width": 0.2, "taper": 0.5, "depth": [0, 0.8], "lean": 3}
+        {"type": "strokes", "role": "a", "count": 8, "x": [0, 1], "y": [0.5, 0.5],
+         "length": [4, 8], "width": 0.2, "taper": 0.5, "depth": [0, 0.8], "angle_jitter": 3}
     ]));
     assert_eq!(recipe.points.len(), 8);
     for (index, point) in recipe.points.iter().enumerate() {
-        // One column per slot, so they never bunch up.
+        // One stroke per slot, so they never bunch up.
         let slot = (index as f32 + 0.5) / 8.0;
         assert!((point.position[0] - slot).abs() <= 0.5 * 0.6 / 8.0 + 1e-5);
         assert_eq!(point.position[1], 0.5);
@@ -327,37 +392,72 @@ fn columns_are_tall_spread_and_taper_with_depth() {
         assert!(point.angle.abs() <= 3.0);
         assert!((0.1..=0.2).contains(&point.radius), "{}", point.radius);
     }
-    // The farthest columns narrow and lose contrast to the haze.
+    // The farthest strokes narrow.
     let widths: Vec<_> = recipe.points.iter().map(|p| p.radius).collect();
     assert!(widths.iter().any(|w| *w < 0.15) && widths.iter().any(|w| *w > 0.18));
 }
 
 #[test]
+fn row_heights_come_from_the_y_range() {
+    let recipe = recipe_of(serde_json::json!([
+        {"type": "strokes", "role": "a", "count": 30, "y": [0.3, 0.7]}
+    ]));
+    let heights: Vec<_> = recipe.points.iter().map(|p| p.position[1]).collect();
+    assert!(heights.iter().all(|y| (0.3..=0.7).contains(y)));
+    assert!(heights.iter().any(|y| *y < 0.4) && heights.iter().any(|y| *y > 0.6));
+}
+
+#[test]
+fn scattered_strokes_land_anywhere_in_the_box_and_lean_from_upright() {
+    let recipe = recipe_of(serde_json::json!([
+        {"type": "strokes", "role": "b", "arrange": "scatter", "count": 12,
+         "x": [0.1, 0.9], "y": [0.15, 0.55], "angle": 28, "angle_jitter": 5,
+         "length": [9, 9], "width": 0.06, "taper": 0, "strength": 2}
+    ]));
+    assert_eq!(recipe.points.len(), 12);
+    for point in &recipe.points {
+        assert!((23.0..=33.0).contains(&point.angle), "{}", point.angle);
+        assert!((point.stretch - 1.0 / 9.0).abs() < 1e-6);
+        assert_eq!((point.radius, point.strength), (0.06, 2.0));
+        assert!((0.1..=0.9).contains(&point.position[0]));
+        assert!((0.15..=0.55).contains(&point.position[1]));
+    }
+    // Unlike a row, positions are not pinned to evenly spaced slots.
+    let slots: Vec<_> = recipe
+        .points
+        .iter()
+        .map(|p| ((p.position[0] - 0.1) / 0.8 * 12.0) as usize)
+        .collect();
+    let mut sorted = slots.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert!(sorted.len() < 12, "{slots:?}");
+}
+
+#[test]
+fn angle_is_the_lean_from_upright_in_degrees_clockwise() {
+    let lean = |angle: i32| {
+        recipe_of(serde_json::json!([
+            {"type": "strokes", "role": "a", "count": 1, "angle": angle, "angle_jitter": 0,
+             "length": [5, 5]}
+        ]))
+        .points[0]
+            .angle
+    };
+    assert_eq!(
+        (lean(0), lean(90), lean(-90), lean(28)),
+        (0.0, 90.0, -90.0, 28.0)
+    );
+}
+
+#[test]
 fn heavy_taper_never_pushes_a_radius_below_the_minimum() {
     let recipe = recipe_of(serde_json::json!([
-        {"type": "columns", "role": "a", "count": 40, "width": 0.05, "taper": 1,
+        {"type": "strokes", "role": "a", "count": 40, "width": 0.05, "taper": 1,
          "depth": [0, 1]}
     ]));
     assert!(recipe.points.iter().all(|p| p.radius >= 0.05));
     assert!(recipe.compile().is_ok());
-}
-
-#[test]
-fn shafts_slant_by_their_angle() {
-    let recipe = recipe_of(serde_json::json!([
-        {"type": "shafts", "role": "b", "count": 6, "angle": -40, "angle_jitter": 5,
-         "length": 9, "width": 0.06, "strength": 2}
-    ]));
-    assert_eq!(recipe.points.len(), 6);
-    for point in &recipe.points {
-        assert!((-45.0..=-35.0).contains(&point.angle), "{}", point.angle);
-        assert_eq!(
-            (point.stretch, point.radius, point.strength),
-            (9.0, 0.06, 2.0)
-        );
-        assert!((0.1..=0.9).contains(&point.position[0]));
-        assert!((0.15..=0.55).contains(&point.position[1]));
-    }
 }
 
 #[test]
@@ -391,6 +491,89 @@ fn lights_are_small_strong_spread_out_and_use_every_role() {
         .filter(|p| rgb_to_oklab(p.color)[2] > 0.0)
         .count();
     assert!(warm > 10 && warm < 50, "{warm}");
+}
+
+#[test]
+fn light_cores_add_a_smaller_brighter_point_at_the_same_spot() {
+    let make = |core: f32| {
+        recipe_of(serde_json::json!([
+            {"type": "lights", "count": 10, "roles": [{"role": "b"}], "radius": [0.1, 0.2],
+             "strength": 3, "shade": [0, 0], "core": core, "core_shade": 1}
+        ]))
+    };
+    let plain = make(0.0);
+    assert_eq!(plain.points.len(), 10);
+    let cored = make(0.5);
+    assert_eq!(cored.points.len(), 20);
+    for pair in cored.points.chunks(2) {
+        let (body, core) = (&pair[0], &pair[1]);
+        assert_eq!(body.position, core.position);
+        assert!((core.radius - (body.radius * 0.5).max(0.05)).abs() < 1e-6);
+        assert_eq!(body.strength, core.strength);
+    }
+    // Each point has its own small random variation, so compare the averages.
+    let lightness = |points: Vec<&Point>| {
+        points.iter().map(|p| rgb_to_oklab(p.color)[0]).sum::<f32>() / points.len() as f32
+    };
+    let bodies = lightness(cored.points.iter().step_by(2).collect());
+    let cores = lightness(cored.points.iter().skip(1).step_by(2).collect());
+    assert!(cores > bodies + 0.03, "{cores} vs {bodies}");
+    // Cores are small, so they never go below the smallest allowed radius.
+    let tiny = recipe_of(serde_json::json!([
+        {"type": "lights", "count": 6, "roles": [{"role": "a"}], "radius": [0.05, 0.06],
+         "core": 0.2}
+    ]));
+    assert!(tiny.points.iter().all(|p| p.radius >= 0.05));
+    assert!(tiny.compile().is_ok());
+}
+
+#[test]
+fn bloom_adds_wider_weaker_rings_that_fade_toward_the_haze() {
+    let make = |bloom: serde_json::Value| {
+        let mut scene = with_elements(serde_json::json!([
+            {"type": "lights", "count": 5, "roles": [{"role": "b"}], "radius": [0.08, 0.08],
+             "strength": 3, "bloom": bloom}
+        ]));
+        scene.haze = Some(Haze {
+            role: "far".into(),
+            strength: 0.8,
+            shade: 0.8,
+        });
+        scene.compile().unwrap()
+    };
+    let recipe = make(serde_json::json!({"rings": 3, "spread": 2.0, "strength": 0.4, "fade": 0.5}));
+    // Each light is one point plus three rings, all at the same spot.
+    assert_eq!(recipe.points.len(), 5 * 4);
+    for group in recipe.points.chunks(4) {
+        let light = &group[0];
+        assert!(group.iter().all(|p| p.position == light.position));
+        for (ring, point) in group[1..].iter().enumerate() {
+            let ring = ring as i32 + 1;
+            assert!(
+                (point.radius - 0.08 * 2.0f32.powi(ring)).abs() < 1e-5,
+                "{ring}"
+            );
+            assert!(
+                (point.strength - 0.4 * 0.5f32.powi(ring - 1)).abs() < 1e-5,
+                "{ring}"
+            );
+        }
+        // Wider and weaker, outward.
+        assert!(group.windows(2).all(|w| w[1].radius > w[0].radius));
+        assert!(group[1].strength < light.strength);
+    }
+    // Outer rings are pulled further toward the (pale, desaturated) haze.
+    let chroma = |rgb| {
+        let lab = rgb_to_oklab(rgb);
+        lab[1].hypot(lab[2])
+    };
+    let group = &recipe.points[..4];
+    assert!(chroma(group[3].color) < chroma(group[1].color));
+    // Without bloom there are no extra points.
+    let plain = with_elements(serde_json::json!([
+        {"type": "lights", "count": 5, "roles": [{"role": "b"}]}
+    ]));
+    assert_eq!(plain.compile().unwrap().points.len(), 5);
 }
 
 #[test]

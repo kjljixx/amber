@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub use color::ColorSpec;
 #[cfg(feature = "generation")]
 pub(crate) use color::{COLORS, family};
-pub use elements::{Element, GridRule, LightRole};
+pub use elements::{Arrange, Bloom, Element, GridRule, LightRole};
 
 use crate::{
     MotionStyle, Point, Recipe,

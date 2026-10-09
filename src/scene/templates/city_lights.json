@@ -1,102 +1,245 @@
 {
   "palette": {
-    "sky": "indigo",
-    "glow": "magenta",
-    "building": "black",
-    "warm": "amber",
-    "cool": "cyan",
-    "accent": "pink"
+    "sky_top": "#1c2c94",
+    "sky_mid": "#6a4bb0",
+    "sky_low": "#f08c70",
+    "tower": "#251b5c",
+    "water_top": "#5a3f8e",
+    "water_deep": "#1b1850",
+    "gold": "#ffd36e",
+    "amber": "#ffb347",
+    "coral": "#ff8a5c",
+    "blush": "#ff9db8",
+    "pearl": "#fff0cf"
   },
   "haze": {
-    "role": "glow",
-    "strength": 0.5,
-    "shade": -0.2
+    "role": "sky_low",
+    "strength": 0.6,
+    "shade": 0.2
   },
   "style": {
-    "lightness": 0.6,
+    "lightness": 2.0,
     "saturation": 2.8,
     "contrast": 3.0,
-    "energy": 1.0,
-    "focus": 0.6
+    "energy": 1.5,
+    "focus": 0.8
   },
   "elements": [
     {
       "type": "gradient",
-      "from": "sky",
-      "to": "glow",
+      "from": "sky_top",
+      "to": "sky_mid",
       "y": [
         0.0,
-        0.62
+        0.35
       ],
-      "rows": 10,
+      "rows": 5,
       "radius": 0.4,
-      "strength": 0.4,
-      "shade": [
-        -0.8,
-        -0.2
-      ]
+      "strength": 0.4
     },
     {
-      "type": "columns",
-      "role": "building",
-      "count": 12,
+      "type": "gradient",
+      "from": "sky_mid",
+      "to": "sky_low",
+      "y": [
+        0.38,
+        0.74
+      ],
+      "rows": 6,
+      "radius": 0.4,
+      "strength": 0.4
+    },
+    {
+      "type": "strokes",
+      "role": "tower",
+      "count": 8,
       "x": [
         -0.05,
         1.05
       ],
-      "y": 1.0,
-      "height": [
-        6,
-        10
+      "y": [
+        0.66,
+        0.72
       ],
-      "width": 0.12,
+      "length": [
+        3,
+        6
+      ],
+      "width": 0.2,
       "taper": 0.3,
       "depth": [
-        0.0,
-        0.6
+        0,
+        0.5
       ],
-      "lean": 0.0,
-      "shade": -0.5
+      "angle_jitter": 0.5,
+      "shade": -0.5,
+      "strength": 2.2
+    },
+    {
+      "type": "gradient",
+      "from": "water_top",
+      "to": "water_deep",
+      "y": [
+        0.76,
+        1.0
+      ],
+      "rows": 4,
+      "radius": 0.4,
+      "strength": 0.5
     },
     {
       "type": "lights",
-      "count": 70,
       "roles": [
         {
-          "role": "warm",
-          "weight": 5
+          "role": "gold",
+          "weight": 3
         },
         {
-          "role": "cool",
+          "role": "amber",
+          "weight": 3
+        },
+        {
+          "role": "coral",
           "weight": 2
         },
         {
-          "role": "accent",
+          "role": "blush",
+          "weight": 1
+        },
+        {
+          "role": "pearl",
           "weight": 1
         }
       ],
+      "count": 4,
       "x": [
-        0.0,
-        1.0
+        0.1,
+        0.9
       ],
       "y": [
-        0.68,
-        0.99
+        0.5,
+        0.7
       ],
       "radius": [
-        0.05,
-        0.06
+        0.18,
+        0.26
       ],
-      "strength": 6,
+      "strength": 1.2,
       "shade": [
+        0.3,
+        0.6
+      ],
+      "depth": 0.5
+    },
+    {
+      "type": "lights",
+      "roles": [
+        {
+          "role": "gold",
+          "weight": 3
+        },
+        {
+          "role": "amber",
+          "weight": 3
+        },
+        {
+          "role": "coral",
+          "weight": 2
+        },
+        {
+          "role": "blush",
+          "weight": 1
+        },
+        {
+          "role": "pearl",
+          "weight": 1
+        }
+      ],
+      "count": 13,
+      "x": [
+        0.05,
+        0.95
+      ],
+      "y": [
         0.5,
-        1.2
-      ]
+        0.7
+      ],
+      "radius": [
+        0.08,
+        0.13
+      ],
+      "strength": 3,
+      "shade": [
+        0.3,
+        0.8
+      ],
+      "depth": 0.05,
+      "core": 0.5,
+      "core_shade": 0.4,
+      "bloom": {
+        "rings": 3,
+        "spread": 1.9,
+        "strength": 0.3,
+        "fade": 0.5
+      }
+    },
+    {
+      "type": "lights",
+      "roles": [
+        {
+          "role": "gold",
+          "weight": 3
+        },
+        {
+          "role": "amber",
+          "weight": 3
+        },
+        {
+          "role": "coral",
+          "weight": 2
+        },
+        {
+          "role": "blush",
+          "weight": 1
+        },
+        {
+          "role": "pearl",
+          "weight": 1
+        }
+      ],
+      "count": 2,
+      "x": [
+        0.1,
+        0.9
+      ],
+      "y": [
+        0.38,
+        0.5
+      ],
+      "radius": [
+        0.08,
+        0.12
+      ],
+      "strength": 3,
+      "shade": [
+        0.2,
+        0.7
+      ],
+      "depth": 0.05,
+      "core": 0.5,
+      "core_shade": 0.35,
+      "bloom": {
+        "rings": 3,
+        "spread": 1.9,
+        "strength": 0.3,
+        "fade": 0.5
+      }
     }
   ],
-  "variation": 3,
-  "distortion": 0.15,
+  "variation": 1,
+  "softness": 0.5,
+  "distortion": 0.12,
   "swirl": 0.0,
   "motion": 0.3,
-  "motion_style": "wander"
+  "motion_style": "flow"
 }
