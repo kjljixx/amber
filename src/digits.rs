@@ -3,10 +3,11 @@
 //! [`Digits`] is an ordinary Ratatui widget that knows nothing about gradients.
 //! Render it after whatever painted the half-block cells (a `GradientView`, for
 //! instance): it reads the two colors already in each `▀` cell and blends the
-//! digits over them. Cells that are not colored half blocks are left alone.
-use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
+//! digits over them with [`blend_samples`](crate::blend_samples). Cells that are
+//! not colored half blocks are left alone.
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
-use crate::color::{Oklab, Rgb, oklab_to_rgb, rgb_to_oklab};
+use crate::{color::Rgb, overlay::blend_samples};
 
 /// Text shrinks to leave this fraction of the width and height empty.
 const MARGIN: f32 = 0.1;
@@ -210,53 +211,18 @@ impl Digits {
 impl Widget for &mut Digits {
     fn render(self, area: Rect, buffer: &mut Buffer) {
         let area = area.intersection(buffer.area);
-        let rows = area.height.min(u16::MAX / 2);
-        if area.width == 0 || rows == 0 {
+        let area = Rect {
+            height: area.height.min(u16::MAX / 2),
+            ..area
+        };
+        if area.is_empty() {
             return;
         }
         let (color, alpha) = (self.color, self.alpha);
-        let text = rgb_to_oklab(color);
-        let mask = self.mask(area.width, 2 * rows);
-        for row in 0..rows {
-            for column in 0..area.width {
-                let (top, bottom) = (mask.at(column, 2 * row), mask.at(column, 2 * row + 1));
-                if !top && !bottom {
-                    continue;
-                }
-                let cell = &mut buffer[(area.x + column, area.y + row)];
-                // A colored half block: foreground is the top half, background
-                // the bottom half.
-                let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (cell.fg, cell.bg) else {
-                    continue;
-                };
-                if cell.symbol() != "▀" {
-                    continue;
-                }
-                let over = |covered: bool, below: Rgb| {
-                    if covered {
-                        blend(below, text, color, alpha)
-                    } else {
-                        below
-                    }
-                };
-                let [r, g, b] = over(top, [r1, g1, b1]);
-                cell.set_fg(Color::Rgb(r, g, b));
-                let [r, g, b] = over(bottom, [r2, g2, b2]);
-                cell.set_bg(Color::Rgb(r, g, b));
-            }
-        }
-    }
-}
-
-/// `color` over `below` at `alpha`, mixed in OKLab. `text` is `color` in OKLab.
-fn blend(below: Rgb, text: Oklab, color: Rgb, alpha: f32) -> Rgb {
-    if alpha >= 1.0 {
-        color
-    } else if alpha <= 0.0 {
-        below
-    } else {
-        let below = rgb_to_oklab(below);
-        oklab_to_rgb([0, 1, 2].map(|i| below[i] + (text[i] - below[i]) * alpha))
+        let mask = self.mask(area.width, 2 * area.height);
+        blend_samples(buffer, area, color, alpha, |column, row| {
+            mask.at(column, row)
+        });
     }
 }
 
@@ -295,7 +261,7 @@ impl Mask {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
 
     use super::*;
     use crate::{GradientView, presets};

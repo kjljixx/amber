@@ -100,11 +100,17 @@ The coverage is computed once per area size, so animation costs only the blend
 over covered samples. Pick a color with contrast against the whole gradient:
 pale text fades over light regions. To change the text, build a new `Digits`.
 
+To draw other translucent shapes the same way, `blend_samples(buffer, area,
+color, alpha, covered)` blends a color over whichever half-block samples
+`covered(column, row)` selects, where `row` counts two samples per terminal row.
+`Digits` is built on it, and `src/bin/timer.rs` uses it for its progress bars.
+
 The shapes are the `glyph()` table in `src/digits.rs`. `tools/digit-editor.html`
 is a standalone browser editor for them, with a live preview and an export in
 the same form.
 
-Run `cargo run --offline --example digits -- 25:47 0.85` to try it.
+Run `cargo run --offline --example digits -- 25:47 0.85` to try it, or
+`cargo run --offline --bin timer` for a pomodoro clock built on it.
 
 Run `cargo run --offline --example background` for a complete host application
 with a solid panel over the gradient. Space pauses; `q` exits.
