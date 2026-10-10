@@ -26,6 +26,11 @@
 //! or a `.env` file. `--todoist-filter "today | overdue"` reads only the tasks a
 //! Todoist filter matches. Todoist is only ever read, never changed.
 //!
+//! The focus checker captures the primary screen every 20 seconds while a
+//! chosen task is active. GPT-6 Luna Decisions checks whether the image looks
+//! off task; Amber sends a desktop notification after two consecutive off-task
+//! decisions. Pass `--no-focus-check` to disable it for a run.
+//!
 //! The first gradient is made for the moment: the weekday, time of day, month
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
 //! cool". Every task after that is sent with only a hint of it, its light and
@@ -47,6 +52,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "focus-check")]
+use amber::focus::{Event as FocusEvent, FocusChecker};
 use amber::{
     Digits, Excitement, GradientView, Reactivity,
     ambient::{Ambient, Moment, Place},
@@ -648,6 +655,8 @@ struct Options {
     /// one, instead.
     todoist: bool,
     todoist_filter: Option<String>,
+    /// Check screenshots against the selected task every 20 seconds.
+    focus_check: bool,
 }
 
 impl Default for Options {
@@ -660,13 +669,14 @@ impl Default for Options {
             tasks: None,
             todoist: false,
             todoist_filter: None,
+            focus_check: cfg!(feature = "focus-check"),
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---todoist | --todoist-filter <query> | --list-audio | --alarm-test";
+--todoist | --todoist-filter <query> | --no-focus-check | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -686,6 +696,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         match name.as_str() {
             "--alarm-test" => return Ok(Command::AlarmTest),
             "--list-audio" => return Ok(Command::ListAudio),
+            "--no-focus-check" => options.focus_check = false,
             "--no-weather" => options.place = None,
             "--audio" => options.listen = true,
             "--location" => {
@@ -852,6 +863,16 @@ fn run() -> io::Result<()> {
     }
     let mut lively = false;
     let mut task = TaskLine::default();
+    #[cfg(feature = "focus-check")]
+    let mut focus_checker = if options.focus_check {
+        Some(FocusChecker::from_env(Path::new(".env")).map_err(io::Error::other)?)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "focus-check"))]
+    if options.focus_check {
+        return Err(io::Error::other("rebuild Amber with the focus-check feature").into());
+    }
     // The moment, which goes to Jev with every task.
     let mut moment: Option<Moment> = None;
     let mut picker: Option<Picker> = None;
@@ -921,6 +942,28 @@ fn run() -> io::Result<()> {
                     Err(_) => task.failed(),
                 }
                 redraw = true;
+            }
+            #[cfg(feature = "focus-check")]
+            if let Some(checker) = focus_checker.as_mut() {
+                match checker.poll(now) {
+                    Some(FocusEvent::OffTask) => {
+                        let message = "Two or more checks in a row look unrelated to your task";
+                        let _ = alarm::notify("Amber focus check", message);
+                        notice = Some(Notice {
+                            text: message.into(),
+                            until: now + 2 * NOTICE,
+                        });
+                        redraw = true;
+                    }
+                    Some(FocusEvent::Error(message)) => {
+                        notice = Some(Notice {
+                            text: format!("Focus check: {message}"),
+                            until: now + 2 * NOTICE,
+                        });
+                        redraw = true;
+                    }
+                    None => {}
+                }
             }
             let current = label(clock.remaining(now));
             if current != shown {
@@ -998,6 +1041,10 @@ fn run() -> io::Result<()> {
                 notice
                     .as_ref()
                     .map(|notice| notice.until.saturating_duration_since(Instant::now())),
+                #[cfg(feature = "focus-check")]
+                focus_checker
+                    .as_ref()
+                    .and_then(|checker| checker.time_until_next(Instant::now())),
             ]
             .into_iter()
             .flatten()
@@ -1025,6 +1072,10 @@ fn run() -> io::Result<()> {
                                 if let Some(chosen) = chosen.filter(|chosen| !chosen.is_empty()) {
                                     let chosen: String =
                                         chosen.chars().take(MAX_TASK_CHARS).collect();
+                                    #[cfg(feature = "focus-check")]
+                                    if let Some(checker) = focus_checker.as_mut() {
+                                        checker.set_task(Some(chosen.clone()), Instant::now());
+                                    }
                                     let description =
                                         gradient_description(&chosen, moment.as_ref());
                                     let was_pending = generator.is_pending();

@@ -8,6 +8,8 @@ mod animation;
 pub mod audio;
 mod color;
 mod digits;
+#[cfg(feature = "focus-check")]
+pub mod focus;
 #[cfg(feature = "generation")]
 pub mod generation;
 mod gradient;

@@ -91,6 +91,26 @@ at 8x the rate Jev suggests by default. Jev is told the task and the moment (see
 below), and once it has made a gradient the task stays above the clock until a
 new one replaces it.
 
+The focus checker compares the selected task with a screenshot every 20
+seconds by default, starting 20 seconds after you choose a task:
+
+```sh
+cargo run --offline --bin timer
+```
+
+Pass `--no-focus-check` to disable it for a run.
+
+GPT-6 Luna Decisions receives the screenshot and task text through OpenRouter.
+From the second consecutive off-task decision onward, each off-task check sends
+a desktop notification. An on-task decision resets the streak. Choosing a
+different task starts a new sequence. `FOCUS_MODEL` can override the default
+`openai/gpt-6-luna-decisions`. The first macOS capture invokes the system
+Screen Recording permission flow; allow Amber in System Settings → Privacy &
+Security → Screen & System Audio Recording and restart Amber if capture does
+not resume. Windows has no equivalent per-app screen recording prompt. If
+capture or a model call fails, the timer shows an error and retries on the next
+check.
+
 ## Choosing the task from a list
 
 `--tasks list.md` gives `t` a list to choose from: the unfinished items of a
