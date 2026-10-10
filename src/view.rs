@@ -87,11 +87,11 @@ pub struct Reactivity {
 impl Default for Reactivity {
     fn default() -> Self {
         Self {
-            speed: 3.0,
-            kick: 6.0,
-            busy: 5.0,
-            warp: 1.0,
-            steer: 20.0,
+            speed: 2.25,
+            kick: 4.5,
+            busy: 3.75,
+            warp: 0.75,
+            steer: 10.0,
         }
     }
 }
@@ -346,8 +346,8 @@ mod tests {
         let later = now + Duration::from_secs(1);
         plain.update(later);
         excited.update(later);
-        // 3 rad/s of its own, plus 3 for the level and 6 for the pulse.
-        assert!(excited.animation.travel() > 3.0 * plain.animation.travel());
+        // 3 rad/s of its own, plus 2.25 for the level and 4.5 for the pulse.
+        assert!(excited.animation.travel() > 2.0 * plain.animation.travel());
     }
 
     #[test]
@@ -435,8 +435,8 @@ mod tests {
         let later = now + Duration::from_secs(1);
         plain.update(later);
         busy.update(later);
-        // 3 rad/s of its own, plus 5 for the activity.
-        assert!(busy.animation.travel() > 2.0 * plain.animation.travel());
+        // 3 rad/s of its own, plus 3.75 for the activity.
+        assert!(busy.animation.travel() > 1.5 * plain.animation.travel());
     }
 
     #[test]

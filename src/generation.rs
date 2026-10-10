@@ -78,7 +78,7 @@ impl JevClient {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(_) => return Err("Could not read local .env configuration".into()),
         };
-        let settings = dotenv_settings(&file);
+        let settings = dotenv_settings(&file, &["OPENROUTER_API_KEY", "JEV_MODEL"]);
         let get = |name: &str| {
             std::env::var(name)
                 .ok()
@@ -242,13 +242,14 @@ impl Generator {
     }
 }
 
-fn dotenv_settings(file: &str) -> BTreeMap<String, String> {
+/// The `names` set in the text of a dotenv file, ignoring everything else in it.
+pub(crate) fn dotenv_settings(file: &str, names: &[&str]) -> BTreeMap<String, String> {
     file.lines()
         .filter_map(|line| {
             let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
             let (name, value) = line.split_once('=')?;
             let name = name.trim();
-            if !["OPENROUTER_API_KEY", "JEV_MODEL"].contains(&name) {
+            if !names.contains(&name) {
                 return None;
             }
             let value = value.trim();
@@ -592,6 +593,7 @@ mod tests {
     fn dotenv_quotes_and_comments_are_supported_without_exporting_secrets() {
         let config = dotenv_settings(
             "export OPENROUTER_API_KEY='test-key' # comment\nJEV_MODEL=typesafe/jev-1.13 # comment\nUNRELATED=ignored",
+            &["OPENROUTER_API_KEY", "JEV_MODEL"],
         );
         assert_eq!(config["OPENROUTER_API_KEY"], "test-key");
         assert_eq!(config["JEV_MODEL"], DEFAULT_MODEL);

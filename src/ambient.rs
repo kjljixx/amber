@@ -88,7 +88,7 @@ pub fn weather_words(code: u8) -> Option<&'static str> {
         0 => "clear sky",
         1 => "mostly clear",
         2 => "partly cloudy",
-        3 => "overcast",
+        3 => "cloudy",
         45 | 48 => "fog",
         51 => "light drizzle",
         53 => "drizzle",
@@ -221,6 +221,38 @@ pub fn describe(local_now: NaiveDateTime, weather: Option<&Weather>) -> String {
     text
 }
 
+/// Just the light and the weather, such as "golden hour, light rain": what is
+/// left of [`describe`] when the moment is only to tint something else. Without
+/// a `weather`, the part of the day alone.
+pub fn describe_briefly(local_now: NaiveDateTime, weather: Option<&Weather>) -> String {
+    let now = weather.map_or(local_now, |weather| weather.now);
+    let sun = weather.and_then(|w| Some((w.sunrise?, w.sunset?)));
+    let mut text = day_part(now, sun).to_owned();
+    if let Some(words) = weather.and_then(|weather| weather_words(weather.code)) {
+        text.push_str(", ");
+        text.push_str(words);
+    }
+    text
+}
+
+/// The moment, in full and in brief.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Moment {
+    /// As [`describe`] gives it.
+    pub full: String,
+    /// As [`describe_briefly`] gives it.
+    pub brief: String,
+}
+
+impl Moment {
+    pub fn new(local_now: NaiveDateTime, weather: Option<&Weather>) -> Self {
+        Self {
+            full: describe(local_now, weather),
+            brief: describe_briefly(local_now, weather),
+        }
+    }
+}
+
 #[cfg(feature = "generation")]
 pub use lookup::{Ambient, Place};
 
@@ -234,7 +266,7 @@ mod lookup {
     use chrono::Local;
     use serde::Deserialize;
 
-    use super::{Weather, describe, forecast_url, parse_forecast};
+    use super::{Moment, Weather, forecast_url, parse_forecast};
 
     /// How long [`Ambient::poll`] waits for the network before settling for a
     /// description of the time alone.
@@ -335,7 +367,7 @@ mod lookup {
     /// Finds the weather on a worker thread and turns it into a description.
     ///
     /// Call [`poll`](Self::poll) from the event loop until it returns the
-    /// description, which it does once, after the weather arrives or at the
+    /// moment, which it does once, after the weather arrives or at the
     /// latest [`WAIT`] later, with the time alone if the weather could not be
     /// had: no network, an unknown place, anything. Starting with no place
     /// does no lookup at all and answers on the first poll.
@@ -369,7 +401,7 @@ mod lookup {
             !self.done
         }
 
-        pub fn poll(&mut self) -> Option<String> {
+        pub fn poll(&mut self) -> Option<Moment> {
             if self.done {
                 return None;
             }
@@ -380,7 +412,7 @@ mod lookup {
             };
             self.done = true;
             self.receive = None;
-            Some(describe(Local::now().naive_local(), weather.as_ref()))
+            Some(Moment::new(Local::now().naive_local(), weather.as_ref()))
         }
     }
 
@@ -450,8 +482,10 @@ mod lookup {
         fn without_a_place_the_first_poll_answers_with_the_time_alone() {
             let mut ambient = Ambient::start(None);
             assert!(ambient.is_pending());
-            let description = ambient.poll().unwrap();
-            assert!(!description.contains(','), "{description}");
+            let moment = ambient.poll().unwrap();
+            assert!(!moment.full.contains(','), "{}", moment.full);
+            assert_eq!(moment.brief, moment.brief.trim());
+            assert!(!moment.brief.contains(','), "{}", moment.brief);
             assert!(!ambient.is_pending());
             assert_eq!(ambient.poll(), None);
         }
@@ -481,7 +515,10 @@ mod lookup {
             };
             assert_eq!(
                 ambient.poll().unwrap(),
-                "Friday afternoon in October (autumn), clear sky, hot"
+                Moment {
+                    full: "Friday afternoon in October (autumn), clear sky, hot".into(),
+                    brief: "afternoon, clear sky".into(),
+                }
             );
         }
     }
@@ -505,6 +542,35 @@ mod tests {
             sunrise: Some(time("2026-10-09T07:30")),
             sunset: Some(time("2026-10-09T19:00")),
         }
+    }
+
+    #[test]
+    fn the_brief_moment_is_only_the_light_and_the_weather() {
+        // Golden hour by the sun, rain by the code; no weekday, month, season,
+        // temperature or wind.
+        assert_eq!(
+            describe_briefly(time("2026-10-09T12:00"), Some(&weather())),
+            "afternoon, light rain"
+        );
+        let mut windy = weather();
+        windy.now = time("2026-10-09T18:00");
+        windy.wind_kmh = 50.0;
+        windy.temperature_c = -5.0;
+        assert_eq!(
+            describe_briefly(time("2026-10-09T12:00"), Some(&windy)),
+            "golden hour, light rain"
+        );
+        // With no weather it is the clock's part of the day, in the local time.
+        assert_eq!(describe_briefly(time("2026-10-09T08:00"), None), "morning");
+        let mut unknown = weather();
+        unknown.code = 200;
+        assert_eq!(
+            describe_briefly(time("2026-10-09T12:00"), Some(&unknown)),
+            "afternoon"
+        );
+        let moment = Moment::new(time("2026-10-09T08:00"), None);
+        assert_eq!(moment.brief, "morning");
+        assert_eq!(moment.full, describe(time("2026-10-09T08:00"), None));
     }
 
     #[test]

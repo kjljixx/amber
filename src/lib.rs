@@ -16,6 +16,7 @@ mod overlay;
 pub mod presets;
 mod recipe;
 pub mod scene;
+pub mod tasks;
 mod view;
 mod warp;
 

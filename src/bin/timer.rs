@@ -6,26 +6,33 @@
 //!
 //! `cargo run --offline --bin timer`
 //! Space: pause or resume the timer and the gradient | r: back to the start of
-//! the cycle, 25:00 | t: describe a gradient for Jev to make, in a fresh box (Enter
-//! sends it, Esc cancels) | Up/Down: gradient speed | q, Esc or Ctrl+C: quit
+//! the cycle, 25:00 | t: choose the task, in a fresh box (Enter takes it, Esc
+//! cancels) | Up/Down: gradient speed | q, Esc or Ctrl+C: quit
 //!
-//! Once Jev has made a gradient, the description stays centered above the clock
-//! until a new one replaces it.
+//! The task is what the gradient is made for: Jev is given it along with the
+//! moment (see below), and once the gradient is ready the task stays centered
+//! above the clock until a new one replaces it. Typing in the box describes a
+//! task of your own.
 //!
-//! `a` makes the gradient react to sound: it flows faster and warps harder with
-//! the loudness of whatever the machine is playing, and surges on each beat. It
-//! only listens, never records or sends anything. `--audio` starts that at
-//! launch, `--audio-from mic` (or part of a device's name) listens somewhere
-//! else, `--sensitivity 2` makes it respond to quieter sound, and `--list-audio`
-//! prints the devices there are. On macOS the first time asks permission to
-//! record system audio.
+//! `--tasks list.md` gives `t` a list to choose from: the unfinished items of a
+//! markdown file, such as `- [ ] write the report`, under whatever headings it
+//! has. What is typed narrows the list, Up and Down move through it, and Enter
+//! takes the highlighted row. The file is read again each time `t` is pressed.
+//!
+//! `--todoist` chooses from a Todoist account instead: all your active tasks,
+//! soonest due first and then most urgent, with when each is due, its labels and
+//! its project's name at the right. It needs a personal API token (Todoist's
+//! settings, Integrations, Developer) as `TODOIST_API_TOKEN` in the environment
+//! or a `.env` file. `--todoist-filter "today | overdue"` reads only the tasks a
+//! Todoist filter matches. Todoist is only ever read, never changed.
 //!
 //! The first gradient is made for the moment: the weekday, time of day, month
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
-//! cool". The weather is for wherever the machine's IP address seems to be;
-//! `--location Lisbon` names a place instead, and `--no-weather` skips the
-//! lookup and describes the time alone. Only that description goes to Jev, never
-//! the place.
+//! cool". Every task after that is sent with only a hint of it, its light and
+//! weather ("golden hour, light rain"), so the task leads. The weather is for
+//! wherever the machine's IP address seems to be; `--location Lisbon` names a
+//! place instead, and `--no-weather` skips the lookup and uses the time alone.
+//! Only those words go to Jev, never the place.
 //!
 //! When a phase ends, a chime plays and a desktop notification appears: a
 //! climbing one when a work period ends, a falling one when a break does.
@@ -36,16 +43,18 @@
 //! docs/generation.md.
 use std::{
     io,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use amber::{
     Digits, Excitement, GradientView, Reactivity,
-    ambient::{Ambient, Place},
+    ambient::{Ambient, Moment, Place},
     audio::Source,
     blend_samples,
     generation::{GeneratedGradient, Generator},
     presets,
+    tasks::{self, Loader, todoist::Todoist},
 };
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
@@ -60,8 +69,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[path = "../alarm.rs"]
 mod alarm;
+#[path = "../picker.rs"]
+mod picker;
 #[path = "../speed_control.rs"]
 mod speed_control;
+use picker::Picker;
 use speed_control::SpeedControl;
 
 const WORK: Duration = Duration::from_secs(25 * 60);
@@ -78,7 +90,9 @@ const BASE_SPEED: f64 = 0.15;
 /// Speed steps above 1x at the start: each is a factor of the square root of
 /// two, so 6 steps is 8x. With the base rate that is 1.2 radians per second.
 const DEFAULT_SPEED_STEPS: i32 = 6;
-const MAX_PROMPT_CHARS: usize = 1000;
+/// Longest task, leaving room under Jev's limit of 1,000 characters for the
+/// moment that goes with it.
+const MAX_TASK_CHARS: usize = 500;
 /// Frame spacing normally, and while sound is moving the gradient: short enough
 /// to follow a beat.
 const CALM_FRAME: Duration = Duration::from_millis(50);
@@ -293,7 +307,7 @@ fn draw_cycle(buffer: &mut Buffer, area: Rect, phase: Phase, progress: f32) {
 /// The text box for describing a gradient, and the description behind the
 /// gradient on screen.
 #[derive(Default)]
-struct Prompt {
+struct TaskLine {
     open: bool,
     /// What is being typed. Empty whenever the box opens, so a new description
     /// starts from nothing; the one on screen is `shown`.
@@ -308,9 +322,9 @@ struct Prompt {
     automatic: bool,
 }
 
-impl Prompt {
+impl TaskLine {
     fn push(&mut self, character: char) {
-        if !character.is_control() && self.text.chars().count() < MAX_PROMPT_CHARS {
+        if !character.is_control() && self.text.chars().count() < MAX_TASK_CHARS {
             self.text.push(character);
         }
     }
@@ -340,9 +354,9 @@ impl Prompt {
         self.text.clear();
     }
 
-    /// A request has started for the text in the box.
-    fn started(&mut self) {
-        self.in_flight = Some(self.text.trim().to_owned());
+    /// A request has started for `task`: the one chosen, or the text typed.
+    fn started_for(&mut self, task: String) {
+        self.in_flight = Some(task);
         self.automatic = false;
     }
 
@@ -383,27 +397,32 @@ impl Prompt {
 
     /// The start of the description on screen, ending in `…` if it is cut.
     fn caption(&self, columns: usize) -> String {
-        let text = self.shown.as_deref().unwrap_or_default();
-        if text.width() <= columns {
-            return text.to_owned();
-        }
-        let mut caption = String::new();
-        for character in text.chars() {
-            // Leave a column for the ellipsis.
-            if caption.width() + character.width().unwrap_or(0) >= columns {
-                break;
-            }
-            caption.push(character);
-        }
-        caption.push('…');
-        caption
+        fit(self.shown.as_deref().unwrap_or_default(), columns)
     }
 }
 
-/// Where the prompt line goes: just above the digits and lined up with them,
+/// The start of `text` that fits in `columns` terminal columns, ending in `…`
+/// if it is cut.
+fn fit(text: &str, columns: usize) -> String {
+    if text.width() <= columns {
+        return text.to_owned();
+    }
+    let mut fitted = String::new();
+    for character in text.chars() {
+        // Leave a column for the ellipsis.
+        if fitted.width() + character.width().unwrap_or(0) >= columns {
+            break;
+        }
+        fitted.push(character);
+    }
+    fitted.push('…');
+    fitted
+}
+
+/// Where the task line goes: just above the digits and lined up with them,
 /// with a blank row between when there is room. With nowhere above the digits,
 /// or no digits on screen, it takes the top row.
-fn prompt_row(area: Rect, digits: Option<Rect>) -> Option<Rect> {
+fn task_row(area: Rect, digits: Option<Rect>) -> Option<Rect> {
     if area.is_empty() {
         return None;
     }
@@ -417,16 +436,16 @@ fn prompt_row(area: Rect, digits: Option<Rect>) -> Option<Rect> {
     Some(Rect::new(area.x, area.y, area.width, 1))
 }
 
-/// The prompt line. While the box is open it is a chevron and the text being
+/// The task line. While the box is open it is a chevron and the text being
 /// edited on an opaque black line, with a cursor, so it stays legible while
 /// typing. Otherwise it is the description behind the current gradient, as bare
 /// text centered right on the gradient.
-fn draw_prompt(frame: &mut Frame, row: Rect, prompt: &Prompt) {
-    if !prompt.open {
+fn draw_task_line(frame: &mut Frame, row: Rect, task: &TaskLine) {
+    if !task.open {
         draw_caption(
             frame.buffer_mut(),
             row,
-            &prompt.caption(usize::from(row.width)),
+            &task.caption(usize::from(row.width)),
         );
         return;
     }
@@ -437,7 +456,7 @@ fn draw_prompt(frame: &mut Frame, row: Rect, prompt: &Prompt) {
     // A reversed space is the cursor, so the terminal's own cursor can stay
     // hidden instead of flickering while the gradient animates.
     let line = Line::from(vec![
-        Span::raw(format!("> {}", prompt.tail(columns))),
+        Span::raw(format!("> {}", task.tail(columns))),
         Span::styled(" ", style.add_modifier(Modifier::REVERSED)),
     ]);
     frame.render_widget(Paragraph::new(line).style(style), row);
@@ -471,10 +490,19 @@ fn draw_caption(buffer: &mut Buffer, row: Rect, text: &str) {
         1,
     );
     blend_samples(buffer, scrim, BLACK, SCRIM_ALPHA, |_, _| true);
+    let style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    put_text(buffer, left, row.y, text, width, style);
+}
 
-    let backgrounds: Vec<Option<Color>> = (left..left + width)
+/// Write `text`, at most `width` columns of it, starting at `left` on row `y`.
+/// Over half blocks, a letter's cell takes the average of the two halves'
+/// colors behind it, as one background has to serve for both.
+fn put_text(buffer: &mut Buffer, left: u16, y: u16, text: &str, width: u16, style: Style) {
+    let backgrounds: Vec<Option<Color>> = (left..left.saturating_add(width))
         .map(|x| {
-            let cell = &buffer[(x, row.y)];
+            let cell = &buffer[(x, y)];
             match (cell.fg, cell.bg) {
                 (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) if cell.symbol() == "▀" => {
                     let mean = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
@@ -484,13 +512,10 @@ fn draw_caption(buffer: &mut Buffer, row: Rect, text: &str) {
             }
         })
         .collect();
-    let style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    buffer.set_stringn(left, row.y, text, usize::from(width), style);
+    buffer.set_stringn(left, y, text, usize::from(width), style);
     for (x, background) in (left..).zip(backgrounds) {
         if let Some(background) = background {
-            buffer[(x, row.y)].set_bg(background);
+            buffer[(x, y)].set_bg(background);
         }
     }
 }
@@ -520,6 +545,26 @@ fn reactivity_for(energy: f32) -> Reactivity {
         steer: normal.steer * scale,
         ..normal
     }
+}
+
+/// What Jev is told: the task, with a hint of the moment when that is known.
+/// The moment is a few words of light and weather, after the task, so it tints
+/// the gradient and does not decide it: a task says little about color, and a
+/// whole description of the moment would say much more.
+fn gradient_description(task: &str, moment: Option<&Moment>) -> String {
+    match moment {
+        Some(moment) => format!("{task}, with a hint of {}", moment.brief),
+        None => task.to_owned(),
+    }
+}
+
+/// A list to choose from made of what `loader` has so far: its tasks, or
+/// in their place why there are none yet.
+fn picker_for(loader: &Loader) -> Picker {
+    Picker::new(
+        loader.tasks().unwrap_or_default().to_vec(),
+        loader.message(),
+    )
 }
 
 /// What to play and say when `phase` has just begun.
@@ -597,6 +642,12 @@ struct Options {
     listen: bool,
     source: Source,
     sensitivity: f32,
+    /// A markdown file of tasks to choose from.
+    tasks: Option<PathBuf>,
+    /// Choose from the tasks in a Todoist account, by this filter or its usual
+    /// one, instead.
+    todoist: bool,
+    todoist_filter: Option<String>,
 }
 
 impl Default for Options {
@@ -606,12 +657,16 @@ impl Default for Options {
             listen: false,
             source: Source::System,
             sensitivity: 1.0,
+            tasks: None,
+            todoist: false,
+            todoist_filter: None,
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --audio | \
---audio-from <system|mic|device> | --sensitivity <number> | --list-audio | --alarm-test";
+--audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
+--todoist | --todoist-filter <query> | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -644,6 +699,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
                     device => Source::Named(device.to_string()),
                 };
             }
+            "--todoist" => options.todoist = true,
+            "--todoist-filter" => {
+                options.todoist = true;
+                options.todoist_filter =
+                    Some(value("a Todoist filter, such as \"today | overdue\"")?);
+            }
+            "--tasks" => {
+                options.tasks = Some(PathBuf::from(value("a markdown file of tasks")?));
+            }
             "--sensitivity" => {
                 options.sensitivity = value("a number such as 2")?
                     .parse::<f32>()
@@ -656,11 +720,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         if inline.is_some()
             && !matches!(
                 name.as_str(),
-                "--location" | "--audio-from" | "--sensitivity"
+                "--location" | "--audio-from" | "--sensitivity" | "--tasks" | "--todoist-filter"
             )
         {
             return Err(format!("{name} takes no value; {USAGE}"));
         }
+    }
+    if options.tasks.is_some() && options.todoist {
+        return Err("--tasks and --todoist both choose where tasks come from; use one".into());
     }
     Ok(Command::Clock(options))
 }
@@ -784,7 +851,23 @@ fn run() -> io::Result<()> {
         }
     }
     let mut lively = false;
-    let mut prompt = Prompt::default();
+    let mut task = TaskLine::default();
+    // The moment, which goes to Jev with every task.
+    let mut moment: Option<Moment> = None;
+    let mut picker: Option<Picker> = None;
+    let mut loader = match (&options.tasks, options.todoist) {
+        (Some(path), _) => Some(Loader::new(tasks::Source::Markdown(path.clone()))),
+        (None, true) => {
+            let todoist = Todoist::from_env(Path::new(".env"), options.todoist_filter.as_deref())
+                .map_err(io::Error::other)?;
+            Some(Loader::new(tasks::Source::Todoist(todoist)))
+        }
+        (None, false) => None,
+    };
+    // Start fetching now so the list is there by the time it is wanted.
+    if let Some(loader) = loader.as_mut() {
+        loader.refresh();
+    }
     let mut clock = Clock::new(start);
     let mut shown = label(clock.phase().length());
     let mut text = digits(&shown)?;
@@ -795,16 +878,36 @@ fn run() -> io::Result<()> {
             if clock.advance(now) {
                 announce(clock.phase());
             }
-            if let Some(description) = ambient.poll() {
+            if let Some(found) = ambient.poll() {
+                let description = found.full.clone();
+                moment = Some(found);
                 // Start from a gradient for the moment, unless a description has
                 // already been asked for in the meantime.
-                if prompt.shown.is_none() && prompt.in_flight.is_none() {
-                    prompt.started_automatically(description.clone());
+                if task.shown.is_none() && task.in_flight.is_none() {
+                    task.started_automatically(description.clone());
                     if let Some(cached) = generator.submit(&description) {
                         apply(&mut background, &mut speed, &cached)?;
-                        prompt.succeeded();
+                        task.succeeded();
                     } else if !generator.is_pending() {
-                        prompt.failed();
+                        task.failed();
+                    }
+                    redraw = true;
+                }
+            }
+            if let Some(loader) = loader.as_mut() {
+                if let Some(result) = loader.poll() {
+                    if let Some(picker) = picker.as_mut() {
+                        picker.set(
+                            loader.tasks().unwrap_or_default().to_vec(),
+                            loader.message(),
+                        );
+                    }
+                    // The list in view stays when a refresh fails; say so.
+                    if let (Err(message), Some(_)) = (result, loader.tasks()) {
+                        notice = Some(Notice {
+                            text: format!("Tasks: {message}"),
+                            until: now + NOTICE,
+                        });
                     }
                     redraw = true;
                 }
@@ -813,9 +916,9 @@ fn run() -> io::Result<()> {
                 match result {
                     Ok(gradient) => {
                         apply(&mut background, &mut speed, &gradient)?;
-                        prompt.succeeded();
+                        task.succeeded();
                     }
-                    Err(_) => prompt.failed(),
+                    Err(_) => task.failed(),
                 }
                 redraw = true;
             }
@@ -863,10 +966,13 @@ fn run() -> io::Result<()> {
                     background.render(frame, area);
                     frame.render_widget(&mut text, area);
                     draw_cycle(frame.buffer_mut(), area, clock.phase(), clock.progress(now));
-                    // The prompt goes over everything else, above the digits.
-                    if prompt.has_line() {
-                        if let Some(row) = prompt_row(area, text.bounds(area)) {
-                            draw_prompt(frame, row, &prompt);
+                    // The task goes over everything else, above the digits.
+                    if task.has_line() {
+                        if let Some(row) = task_row(area, text.bounds(area)) {
+                            draw_task_line(frame, row, &task);
+                            if let (true, Some(picker)) = (task.open, picker.as_mut()) {
+                                picker.draw(frame.buffer_mut(), row, &task.text);
+                            }
                         }
                     }
                     if let Some(notice) = &notice {
@@ -883,8 +989,10 @@ fn run() -> io::Result<()> {
                 background.wait_duration(Instant::now()),
                 clock.until_label_changes(Instant::now()),
                 // A pending request has to be polled even while paused.
-                (generator.is_pending() || ambient.is_pending())
-                    .then_some(Duration::from_millis(25)),
+                (generator.is_pending()
+                    || ambient.is_pending()
+                    || loader.as_ref().is_some_and(Loader::is_pending))
+                .then_some(Duration::from_millis(25)),
                 // Opening a device can take a moment, and silence is judged by the clock.
                 listener.is_some().then_some(Duration::from_millis(50)),
                 notice
@@ -906,35 +1014,62 @@ fn run() -> io::Result<()> {
                     {
                         return Ok(());
                     }
-                    if prompt.open {
+                    if task.open {
                         match key.code {
-                            KeyCode::Esc => prompt.cancel(),
+                            KeyCode::Esc => task.cancel(),
                             KeyCode::Enter => {
-                                let was_pending = generator.is_pending();
-                                if let Some(cached) = generator.submit(&prompt.text) {
-                                    apply(&mut background, &mut speed, &cached)?;
-                                    prompt.started();
-                                    prompt.succeeded();
-                                } else if !was_pending && generator.is_pending() {
-                                    prompt.started();
+                                let chosen = match &picker {
+                                    Some(picker) => picker.choose(&task.text),
+                                    None => Some(task.text.trim().to_owned()),
+                                };
+                                if let Some(chosen) = chosen.filter(|chosen| !chosen.is_empty()) {
+                                    let chosen: String =
+                                        chosen.chars().take(MAX_TASK_CHARS).collect();
+                                    let description =
+                                        gradient_description(&chosen, moment.as_ref());
+                                    let was_pending = generator.is_pending();
+                                    if let Some(cached) = generator.submit(&description) {
+                                        apply(&mut background, &mut speed, &cached)?;
+                                        task.started_for(chosen);
+                                        task.succeeded();
+                                    } else if !was_pending && generator.is_pending() {
+                                        task.started_for(chosen);
+                                    }
+                                }
+                            }
+                            KeyCode::Up | KeyCode::Down => {
+                                if let Some(picker) = picker.as_mut() {
+                                    picker.step(key.code == KeyCode::Up, &task.text);
                                 }
                             }
                             KeyCode::Backspace => {
-                                prompt.text.pop();
+                                task.text.pop();
+                                if let Some(picker) = picker.as_mut() {
+                                    picker.reset();
+                                }
                             }
                             KeyCode::Char(c)
                                 if !key
                                     .modifiers
                                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                             {
-                                prompt.push(c);
+                                task.push(c);
+                                if let Some(picker) = picker.as_mut() {
+                                    picker.reset();
+                                }
                             }
                             _ => {}
                         }
                     } else {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                            KeyCode::Char('t' | 'T') => prompt.begin(),
+                            KeyCode::Char('t' | 'T') => {
+                                picker = loader.as_mut().map(|loader| {
+                                    loader.refresh();
+                                    picker_for(loader)
+                                });
+                                task.begin();
+                            }
                             KeyCode::Char('a' | 'A') => {
                                 let now = Instant::now();
                                 let (text, started) = if listener.is_some() {
@@ -973,8 +1108,11 @@ fn run() -> io::Result<()> {
                     }
                     redraw = true;
                 }
-                Event::Paste(text) if prompt.open => {
-                    prompt.paste(&text);
+                Event::Paste(text) if task.open => {
+                    task.paste(&text);
+                    if let Some(picker) = picker.as_mut() {
+                        picker.reset();
+                    }
                     redraw = true;
                 }
                 Event::Resize(_, _) => redraw = true,
@@ -1264,44 +1402,44 @@ mod tests {
         assert!(buffer.content.iter().all(|c| c.fg == GREY && c.bg == GREY));
     }
 
-    // ---- the Jev prompt and gradient speed ----
+    // ---- the task line and gradient speed ----
 
     #[test]
-    fn the_prompt_edits_text_within_limits() {
-        let mut prompt = Prompt::default();
+    fn the_task_edits_text_within_limits() {
+        let mut task = TaskLine::default();
         for character in "a sunset\n over\tthe sea".chars() {
-            prompt.push(character);
+            task.push(character);
         }
         // Control characters are dropped.
-        assert_eq!(prompt.text, "a sunset overthe sea");
-        prompt.paste("\u{7}!\n?");
-        assert_eq!(prompt.text, "a sunset overthe sea!?");
+        assert_eq!(task.text, "a sunset overthe sea");
+        task.paste("\u{7}!\n?");
+        assert_eq!(task.text, "a sunset overthe sea!?");
 
         // At most 1000 characters, counting characters and not bytes.
-        let mut long = Prompt::default();
+        let mut long = TaskLine::default();
         long.paste(&"é".repeat(1500));
-        assert_eq!(long.text.chars().count(), MAX_PROMPT_CHARS);
+        assert_eq!(long.text.chars().count(), MAX_TASK_CHARS);
         long.push('x');
-        assert_eq!(long.text.chars().count(), MAX_PROMPT_CHARS);
+        assert_eq!(long.text.chars().count(), MAX_TASK_CHARS);
     }
 
     #[test]
-    fn the_prompt_shows_the_end_of_the_text_that_fits() {
-        let mut prompt = Prompt::default();
-        prompt.paste("glacier ice");
-        assert_eq!(prompt.tail(40), "glacier ice");
-        assert_eq!(prompt.tail(5), "r ice");
-        assert_eq!(prompt.tail(0), "");
+    fn the_task_shows_the_end_of_the_text_that_fits() {
+        let mut task = TaskLine::default();
+        task.paste("glacier ice");
+        assert_eq!(task.tail(40), "glacier ice");
+        assert_eq!(task.tail(5), "r ice");
+        assert_eq!(task.tail(0), "");
         // Wide characters count as two columns.
-        let mut wide = Prompt::default();
+        let mut wide = TaskLine::default();
         wide.paste("日本語");
         assert_eq!(wide.tail(4), "本語");
         assert_eq!(wide.tail(5), "本語");
     }
 
-    /// The prompt drawn over grey half blocks, with the clock's digits laid out
+    /// The task drawn over grey half blocks, with the clock's digits laid out
     /// in the same area, and the row it was given.
-    fn draw(prompt: &Prompt, width: u16, rows: u16) -> (Buffer, Option<Rect>, Rect) {
+    fn draw(task: &TaskLine, width: u16, rows: u16) -> (Buffer, Option<Rect>, Rect) {
         let area = Rect::new(0, 0, width, rows);
         let mut clock = digits("25:49").unwrap();
         let bounds = clock.bounds(area);
@@ -1311,12 +1449,12 @@ mod tests {
                 for cell in &mut frame.buffer_mut().content {
                     cell.set_char('▀').set_fg(GREY).set_bg(GREY);
                 }
-                if let Some(row) = prompt_row(area, bounds) {
-                    draw_prompt(frame, row, prompt);
+                if let Some(row) = task_row(area, bounds) {
+                    draw_task_line(frame, row, task);
                 }
             })
             .unwrap();
-        let row = prompt_row(area, bounds).unwrap();
+        let row = task_row(area, bounds).unwrap();
         (terminal.backend().buffer().clone(), bounds, row)
     }
 
@@ -1327,39 +1465,36 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_line_sits_above_the_digits_lined_up_with_them() {
+    fn the_task_line_sits_above_the_digits_lined_up_with_them() {
         let area = Rect::new(0, 0, 100, 30);
         let digits = Rect::new(20, 10, 60, 9);
         // A blank row between them when there is room...
-        assert_eq!(
-            prompt_row(area, Some(digits)),
-            Some(Rect::new(20, 8, 60, 1))
-        );
+        assert_eq!(task_row(area, Some(digits)), Some(Rect::new(20, 8, 60, 1)));
         // ...directly above when there is only one row...
         let tight = Rect::new(20, 1, 60, 9);
-        assert_eq!(prompt_row(area, Some(tight)), Some(Rect::new(20, 0, 60, 1)));
+        assert_eq!(task_row(area, Some(tight)), Some(Rect::new(20, 0, 60, 1)));
         // ...and along the top edge when there is no room above, or no digits.
         let flush = Rect::new(20, 0, 60, 9);
-        assert_eq!(prompt_row(area, Some(flush)), Some(Rect::new(0, 0, 100, 1)));
-        assert_eq!(prompt_row(area, None), Some(Rect::new(0, 0, 100, 1)));
-        assert_eq!(prompt_row(Rect::new(0, 0, 0, 0), None), None);
+        assert_eq!(task_row(area, Some(flush)), Some(Rect::new(0, 0, 100, 1)));
+        assert_eq!(task_row(area, None), Some(Rect::new(0, 0, 100, 1)));
+        assert_eq!(task_row(Rect::new(0, 0, 0, 0), None), None);
         // An offset screen keeps its offset.
         let offset = Rect::new(5, 3, 100, 30);
-        assert_eq!(prompt_row(offset, None), Some(Rect::new(5, 3, 100, 1)));
+        assert_eq!(task_row(offset, None), Some(Rect::new(5, 3, 100, 1)));
         assert_eq!(
-            prompt_row(offset, Some(Rect::new(25, 13, 60, 9))),
+            task_row(offset, Some(Rect::new(25, 13, 60, 9))),
             Some(Rect::new(25, 11, 60, 1))
         );
     }
 
     #[test]
-    fn the_prompt_is_only_a_chevron_and_the_text_just_above_the_clock() {
-        let mut prompt = Prompt {
+    fn the_task_is_only_a_chevron_and_the_text_just_above_the_clock() {
+        let mut task = TaskLine {
             open: true,
-            ..Prompt::default()
+            ..TaskLine::default()
         };
-        prompt.paste("misty forest");
-        let (buffer, digits, row) = draw(&prompt, 100, 30);
+        task.paste("misty forest");
+        let (buffer, digits, row) = draw(&task, 100, 30);
         let digits = digits.unwrap();
         assert_eq!(row.x, digits.x);
         assert_eq!(row.width, digits.width);
@@ -1392,16 +1527,16 @@ mod tests {
     }
 
     #[test]
-    fn a_long_prompt_scrolls_to_show_its_end() {
-        let mut prompt = Prompt {
+    fn a_long_task_scrolls_to_show_its_end() {
+        let mut task = TaskLine {
             open: true,
-            ..Prompt::default()
+            ..TaskLine::default()
         };
-        prompt.paste(
+        task.paste(
             "a misty forest at dawn with a long thin river running quietly through it \
              and a small wooden bridge over the water near the very end",
         );
-        let (buffer, _, row) = draw(&prompt, 100, 30);
+        let (buffer, _, row) = draw(&task, 100, 30);
         let text = row_text(&buffer, row);
         assert!(text.starts_with("> ") && text.contains("near the very end"));
         assert!(!text.contains("misty"));
@@ -1460,76 +1595,76 @@ mod tests {
 
     #[test]
     fn the_description_stays_until_a_new_one_replaces_it() {
-        let mut prompt = Prompt::default();
-        assert!(!prompt.has_line());
-        prompt.begin();
-        assert!(prompt.has_line());
+        let mut task = TaskLine::default();
+        assert!(!task.has_line());
+        task.begin();
+        assert!(task.has_line());
 
         // Sending a description: it shows once the gradient has arrived.
-        prompt.paste("  a misty forest  ");
-        prompt.started();
-        assert_eq!(prompt.shown, None);
-        prompt.paste("x"); // typed while waiting
-        prompt.succeeded();
-        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
-        assert!(!prompt.open && prompt.has_line());
-        assert_eq!(prompt.text, "");
+        task.paste("  a misty forest  ");
+        task.started_for(task.text.trim().to_owned());
+        assert_eq!(task.shown, None);
+        task.paste("x"); // typed while waiting
+        task.succeeded();
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
+        assert!(!task.open && task.has_line());
+        assert_eq!(task.text, "");
 
         // Opening the box again starts empty, and cancelling leaves the
         // description on screen as it was.
-        prompt.begin();
-        assert!(prompt.open);
-        assert_eq!(prompt.text, "");
-        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
-        prompt.paste("with fog");
-        prompt.cancel();
-        assert_eq!(prompt.text, "");
-        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
-        assert!(!prompt.open && prompt.has_line());
+        task.begin();
+        assert!(task.open);
+        assert_eq!(task.text, "");
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
+        task.paste("with fog");
+        task.cancel();
+        assert_eq!(task.text, "");
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
+        assert!(!task.open && task.has_line());
 
         // A failed request leaves the old gradient and description alone, and
         // the box open with what was typed so it can be sent again.
-        prompt.begin();
-        prompt.paste("something else");
-        prompt.started();
-        prompt.failed();
-        assert!(prompt.open);
-        assert_eq!(prompt.text, "something else");
-        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
-        assert_eq!(prompt.in_flight, None);
+        task.begin();
+        task.paste("something else");
+        task.started_for(task.text.trim().to_owned());
+        task.failed();
+        assert!(task.open);
+        assert_eq!(task.text, "something else");
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
+        assert_eq!(task.in_flight, None);
 
         // A new description replaces it, and only then.
-        prompt.started();
-        prompt.succeeded();
-        assert_eq!(prompt.shown.as_deref(), Some("something else"));
-        assert_eq!(prompt.text, "");
+        task.started_for(task.text.trim().to_owned());
+        task.succeeded();
+        assert_eq!(task.shown.as_deref(), Some("something else"));
+        assert_eq!(task.text, "");
     }
 
     #[test]
     fn a_startup_description_does_not_disturb_a_box_being_typed_in() {
-        let mut prompt = Prompt::default();
-        prompt.started_automatically("Friday morning in May".into());
-        prompt.begin();
-        prompt.paste("half a thought");
-        prompt.succeeded();
-        assert_eq!(prompt.shown.as_deref(), Some("Friday morning in May"));
-        assert!(prompt.open);
-        assert_eq!(prompt.text, "half a thought");
+        let mut task = TaskLine::default();
+        task.started_automatically("Friday morning in May".into());
+        task.begin();
+        task.paste("half a thought");
+        task.succeeded();
+        assert_eq!(task.shown.as_deref(), Some("Friday morning in May"));
+        assert!(task.open);
+        assert_eq!(task.text, "half a thought");
 
         // A failed one shows nothing and leaves the box alone too; the next
         // typed request behaves as usual.
-        let mut prompt = Prompt::default();
-        prompt.started_automatically("Friday morning in May".into());
-        prompt.failed();
-        assert_eq!(prompt.shown, None);
-        assert!(!prompt.has_line());
-        prompt.begin();
-        prompt.paste("a misty forest");
-        prompt.started();
-        prompt.succeeded();
-        assert!(!prompt.open);
-        assert_eq!(prompt.text, "");
-        assert_eq!(prompt.shown.as_deref(), Some("a misty forest"));
+        let mut task = TaskLine::default();
+        task.started_automatically("Friday morning in May".into());
+        task.failed();
+        assert_eq!(task.shown, None);
+        assert!(!task.has_line());
+        task.begin();
+        task.paste("a misty forest");
+        task.started_for(task.text.trim().to_owned());
+        task.succeeded();
+        assert!(!task.open);
+        assert_eq!(task.text, "");
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
     }
 
     #[test]
@@ -1621,38 +1756,145 @@ mod tests {
     }
 
     #[test]
+    fn the_command_line_names_a_file_of_tasks() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        let with = |path: &str| {
+            Ok(Command::Clock(Options {
+                tasks: Some(PathBuf::from(path)),
+                ..Options::default()
+            }))
+        };
+        assert_eq!(parse(&[]), Ok(Command::Clock(Options::default())));
+        assert_eq!(parse(&["--tasks", "list.md"]), with("list.md"));
+        assert_eq!(parse(&["--tasks=my list.md"]), with("my list.md"));
+        assert!(parse(&["--tasks"]).is_err());
+        assert!(parse(&["--tasks="]).is_err());
+    }
+
+    #[test]
+    fn jev_is_told_the_task_with_a_hint_of_the_moment_when_it_knows_it() {
+        let moment = Moment {
+            full: "Friday golden hour in October (autumn), light rain, cool".into(),
+            brief: "golden hour, light rain".into(),
+        };
+        let description = gradient_description("write the report", Some(&moment));
+        assert_eq!(
+            description,
+            "write the report, with a hint of golden hour, light rain"
+        );
+        // Only the brief form goes with a task, and the task comes first.
+        assert!(!description.contains("Friday") && !description.contains("cool"));
+        assert_eq!(
+            gradient_description("write the report", None),
+            "write the report"
+        );
+        // A task and the moment fit in what Jev accepts.
+        let longest = Moment {
+            full: String::new(),
+            brief: "y".repeat(200),
+        };
+        let longest = gradient_description(&"x".repeat(MAX_TASK_CHARS), Some(&longest));
+        assert!(longest.chars().count() < 1000);
+    }
+
+    #[test]
+    fn the_command_line_can_name_a_todoist_filter() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        let todoist = |filter: Option<&str>| {
+            Ok(Command::Clock(Options {
+                todoist: true,
+                todoist_filter: filter.map(str::to_owned),
+                ..Options::default()
+            }))
+        };
+        assert_eq!(parse(&["--todoist"]), todoist(None));
+        assert_eq!(
+            parse(&["--todoist-filter", "#Work & p1"]),
+            todoist(Some("#Work & p1"))
+        );
+        assert_eq!(
+            parse(&["--todoist", "--todoist-filter=today"]),
+            todoist(Some("today"))
+        );
+        assert!(parse(&["--todoist-filter"]).is_err());
+        assert!(parse(&["--todoist=yes"]).is_err());
+        // One place for tasks to come from.
+        assert!(parse(&["--todoist", "--tasks", "list.md"]).is_err());
+        assert!(parse(&["--tasks", "list.md", "--todoist-filter", "today"]).is_err());
+    }
+
+    #[test]
+    fn the_picker_shows_what_the_loader_has_or_why_it_has_nothing() {
+        let path = std::env::temp_dir().join(format!("amber-timer-{}.md", std::process::id()));
+        std::fs::write(&path, "# Done\n- [x] all of it\n").unwrap();
+        let mut loader = Loader::new(tasks::Source::Markdown(path.clone()));
+        let row = |picker: &mut Picker| {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 10));
+            picker.draw(&mut buffer, Rect::new(5, 8, 70, 1), "");
+            (0..80).map(|x| buffer[(x, 7)].symbol()).collect::<String>()
+        };
+        assert!(row(&mut picker_for(&loader)).contains("Loading tasks"));
+
+        loader.refresh();
+        while loader.poll().is_none() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(row(&mut picker_for(&loader)).contains("No open tasks in"));
+
+        // The file is gone now. Failing to read it again leaves the list that
+        // was already fetched, which is empty.
+        loader.refresh();
+        while loader.poll().is_none() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(row(&mut picker_for(&loader)).contains("No open tasks in"));
+
+        // With nothing fetched ever, the reason takes the list's place, and what
+        // is typed still works as a task.
+        let mut never = Loader::new(tasks::Source::Markdown(path));
+        never.refresh();
+        while never.poll().is_none() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut picker = picker_for(&never);
+        assert!(row(&mut picker).contains("Can't read"));
+        assert_eq!(picker.choose("by hand").as_deref(), Some("by hand"));
+    }
+
+    #[test]
     fn opening_the_box_always_starts_empty() {
-        let mut prompt = Prompt {
+        let mut task = TaskLine {
             text: "left over".into(),
             shown: Some("a quiet harbor".into()),
-            ..Prompt::default()
+            ..TaskLine::default()
         };
-        prompt.begin();
-        assert_eq!(prompt.text, "");
-        assert_eq!(prompt.shown.as_deref(), Some("a quiet harbor"));
+        task.begin();
+        assert_eq!(task.text, "");
+        assert_eq!(task.shown.as_deref(), Some("a quiet harbor"));
         // While the box is open and empty, the line is the empty edit box, not
         // the description.
-        assert!(prompt.open && prompt.has_line());
+        assert!(task.open && task.has_line());
     }
 
     #[test]
     fn cancelling_with_nothing_shown_empties_the_box_and_the_line() {
-        let mut prompt = Prompt::default();
-        prompt.open = true;
-        prompt.paste("never sent");
-        prompt.cancel();
-        assert_eq!(prompt.text, "");
-        assert!(!prompt.has_line());
+        let mut task = TaskLine::default();
+        task.open = true;
+        task.paste("never sent");
+        task.cancel();
+        assert_eq!(task.text, "");
+        assert!(!task.has_line());
         // A late arrival with nothing in flight changes nothing.
-        prompt.succeeded();
-        assert_eq!(prompt.shown, None);
+        task.succeeded();
+        assert_eq!(task.shown, None);
     }
 
     #[test]
     fn the_caption_shows_the_start_and_marks_where_it_is_cut() {
-        let with = |text: &str| Prompt {
+        let with = |text: &str| TaskLine {
             shown: Some(text.into()),
-            ..Prompt::default()
+            ..TaskLine::default()
         };
         assert_eq!(with("glacier ice").caption(40), "glacier ice");
         assert_eq!(with("glacier ice").caption(11), "glacier ice");
@@ -1663,18 +1905,18 @@ mod tests {
         let wide = with("日本語の氷河").caption(7);
         assert!(wide.width() <= 7 && wide.ends_with('…'), "{wide:?}");
         assert_eq!(with("x").caption(0), "…");
-        assert_eq!(Prompt::default().caption(10), "");
+        assert_eq!(TaskLine::default().caption(10), "");
     }
 
     #[test]
     fn once_set_the_description_is_bare_centered_text_above_the_clock() {
-        let prompt = Prompt {
+        let task = TaskLine {
             text: "misty forest".into(),
             shown: Some("misty forest".into()),
-            ..Prompt::default()
+            ..TaskLine::default()
         };
-        assert!(!prompt.open && prompt.has_line());
-        let (buffer, digits, row) = draw(&prompt, 100, 30);
+        assert!(!task.open && task.has_line());
+        let (buffer, digits, row) = draw(&task, 100, 30);
         assert!(row.bottom() < digits.unwrap().y);
 
         // No chevron, centered over the clock's width.
@@ -1730,9 +1972,9 @@ mod tests {
         }
 
         // A long description is cut at the end with an ellipsis.
-        let long = Prompt {
+        let long = TaskLine {
             shown: Some("a misty forest at dawn ".repeat(8)),
-            ..Prompt::default()
+            ..TaskLine::default()
         };
         let (buffer, _, row) = draw(&long, 100, 30);
         let text = row_text(&buffer, row);

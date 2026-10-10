@@ -1,6 +1,7 @@
 //! Print the description of this moment that the timer starts from.
 //!
-//! `cargo run --offline --example ambient` uses the weather where this machine's
+//! `cargo run --offline --example ambient` prints the full description and then
+//! the brief one the timer adds to a task. It uses the weather where this machine's
 //! IP address seems to be; `-- Lisbon` names a place; `-- --none` gives the
 //! time alone.
 use std::{thread::sleep, time::Duration};
@@ -15,8 +16,9 @@ fn main() {
     };
     let mut ambient = Ambient::start(place);
     loop {
-        if let Some(description) = ambient.poll() {
-            println!("{description}");
+        if let Some(moment) = ambient.poll() {
+            println!("{}", moment.full);
+            println!("{}", moment.brief);
             return;
         }
         sleep(Duration::from_millis(25));

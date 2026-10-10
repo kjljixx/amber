@@ -72,10 +72,10 @@ At zero the picture is exactly the recipe's own, and a paused view stays still.
 `set_reactivity(Reactivity { speed, kick, busy, warp, steer })` sets how much full
 excitement adds. The speeds are radians per second *added* to the view's own, so
 the music moves a calm gradient and a fast one by the same amount, and the speed
-control does not change how hard it hits: the defaults are 3 from `level`, 6 from
-`pulse` and 5 from `activity`. Warp strength grows by `warp` (1 doubles it) at
-full `pulse`, half as much from `activity` and a quarter from `level`. `steer` is
-20 radians across the whole tone range (about 4 per octave). Keep the frame
+control does not change how hard it hits: the defaults are 2.25 from `level`, 4.5
+from `pulse` and 3.75 from `activity`. Warp strength grows by `warp` (0.75 grows it
+by three quarters) at full `pulse`, half as much from `activity` and a quarter from
+`level`. `steer` is 10 radians across the whole tone range (about 2 per octave). Keep the frame
 interval short (about 33 ms) while excited so a beat is seen.
 
 `amber::audio` is one source of it. `Analyzer` takes mono samples and reports
