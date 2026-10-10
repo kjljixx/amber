@@ -791,7 +791,7 @@ pub(super) fn spread_points(
 
 /// The original layouts. The order of random draws is part of their output, so
 /// it is kept exactly: phase, then positions, then per point a jitter pair,
-/// any rule draws, and the color's two draws.
+/// any rule draws, and the color's three draws.
 fn emit_grid(rule: GridRule, ctx: &mut Ctx) {
     const SLOTS: [&str; 3] = ["main", "second", "accent"];
     let scatter_phase = ctx.random() * TAU;

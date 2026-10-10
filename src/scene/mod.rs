@@ -155,12 +155,13 @@ impl Ctx<'_> {
         (self.rng >> 8) as f32 / 16777216.0
     }
 
-    /// A role's color with a little random variation (two random draws).
+    /// A role's color with per-point variation in lightness, chroma, and hue.
     pub fn color(&mut self, role: &str, shade: f32) -> Oklab {
         let lch = self.palette[role].lch(&self.tone, shade);
-        let l = (lch.l + (self.random() - 0.5) * 0.04).clamp(0.08, 0.97);
-        let h = lch.h + (self.random() - 0.5) * 12.0;
-        color::Lch { l, c: lch.c, h }.to_oklab()
+        let l = (lch.l + (self.random() - 0.5) * 0.12).clamp(0.08, 0.97);
+        let c = lch.c * (0.78 + self.random() * 0.44);
+        let h = lch.h + (self.random() - 0.5) * 36.0;
+        color::Lch { l, c, h }.to_oklab()
     }
 
     fn hazed(&self, lab: Oklab, depth: f32) -> Oklab {

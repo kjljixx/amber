@@ -2,7 +2,7 @@
 //!
 //! A palette role names a family (resolved through the scene's lightness,
 //! saturation and contrast) or an exact hex color. Elements ask for a role plus
-//! a `shade` (lighter or darker); the pipeline adds a little random variation,
+//! a `shade` (lighter or darker); the pipeline adds per-point variation,
 //! then optionally pulls the color toward the scene's haze by `depth`.
 use crate::color::{Oklab, Rgb, rgb_to_oklab};
 
