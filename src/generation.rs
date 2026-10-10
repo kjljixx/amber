@@ -460,8 +460,7 @@ impl Design {
             motion: None,
             // Give each layout motion suited to its composition.
             motion_style: Some(match self.layout {
-                Layout::Sky => crate::MotionStyle::Flow,
-                Layout::Horizon => crate::MotionStyle::Flow,
+                Layout::Sky | Layout::Horizon => crate::MotionStyle::FlowWave,
                 Layout::Glow => crate::MotionStyle::Glow,
                 Layout::Scatter => crate::MotionStyle::Scatter,
                 Layout::Superscatter => crate::MotionStyle::Superscatter,

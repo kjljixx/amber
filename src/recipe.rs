@@ -10,6 +10,8 @@ pub enum MotionStyle {
     #[default]
     Loop,
     Flow,
+    /// Steady flow with a slower angled wave across the color regions.
+    FlowWave,
     Wander,
     /// The glow center drifts and expands or contracts.
     Glow,
@@ -126,6 +128,7 @@ impl CompiledRecipe {
         let field = match self.motion_style {
             MotionStyle::Loop => field.with_drift(phase, motion),
             MotionStyle::Flow => field,
+            MotionStyle::FlowWave => field.with_secondary_wave(travel, motion, self.warp.seed()),
             MotionStyle::Wander => field.with_wander(travel, motion, self.warp.seed()),
             MotionStyle::Glow => field.with_roaming_glow(travel, motion, self.warp.seed()),
             MotionStyle::Scatter => {
@@ -145,7 +148,8 @@ impl CompiledRecipe {
                     aspect,
                     inherited: if self.motion_style == MotionStyle::Loop {
                         LayerMotion::Cycle
-                    } else if self.motion_style == MotionStyle::Flow {
+                    } else if matches!(self.motion_style, MotionStyle::Flow | MotionStyle::FlowWave)
+                    {
                         LayerMotion::Drift
                     } else {
                         LayerMotion::Wander

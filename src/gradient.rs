@@ -232,6 +232,26 @@ impl PreparedGradient {
         self.with_wander_strength(travel, motion, seed, 0.06)
     }
 
+    /// Add a slow, angled secondary wave while the primary warp keeps flowing.
+    pub(crate) fn with_secondary_wave(mut self, travel: f64, motion: f32, seed: u16) -> Self {
+        assert!(travel.is_finite() && travel >= 0.0);
+        assert!(motion.is_finite() && (0.0..=1.5).contains(&motion));
+        let angle: f32 = 0.58;
+        let (sin, cos) = angle.sin_cos();
+        let key = u64::from(seed) * 131 + 701;
+        let time = travel * 0.18;
+        let phase =
+            time as f32 + 0.45 * (wander_path(time as f64 * 0.12, key) - wander_path(0.0, key));
+        for point in &mut self.points {
+            let along = point.position[0] * cos + point.position[1] * sin;
+            let wave = (along * std::f32::consts::TAU * 0.72 - phase).sin();
+            let displacement = motion * 0.045 * wave;
+            point.position[0] -= sin * displacement * self.x_scale;
+            point.position[1] += cos * displacement;
+        }
+        self
+    }
+
     /// Independently move color regions far enough to cross their neighbors.
     pub(crate) fn with_scatter_wander(
         self,

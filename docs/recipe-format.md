@@ -21,7 +21,7 @@ All fields except `motion_style`, `warp`, and the optional `points[]` shape fiel
 | `swirl` | Rotation strength and direction | −1–1 |
 | `seed` | Reproducible fold pattern | Integer 0–999 |
 | `motion` | Drift strength (flow speed or wandering amplitude) | 0–1.5 |
-| `motion_style` | Animation behavior; defaults to `loop` | `loop`, `flow`, `wander`, `sky`, `horizon`, `glow`, `scatter`, `superscatter`, `wash` |
+| `motion_style` | Animation behavior; defaults to `loop`; `flow_wave` adds a slower angled wave over steady flow | `loop`, `flow`, `flow_wave`, `wander`, `glow`, `scatter`, `superscatter`, `wash` |
 | `warp` | Optional extra warp layers, run in order after the classic ones | At most 16 layers in total, including the classic ones |
 
 `radius` sets a point's width and edge softness relative to `softness`: below 1
