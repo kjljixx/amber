@@ -228,11 +228,55 @@ impl PreparedGradient {
 
     /// Smooth seeded motion with no prescribed repeating cycle.
     /// Subtract the initial noise value so time zero preserves the layout.
-    pub fn with_wander(mut self, travel: f64, motion: f32, seed: u16) -> Self {
+    pub fn with_wander(self, travel: f64, motion: f32, seed: u16) -> Self {
+        self.with_wander_strength(travel, motion, seed, 0.06)
+    }
+
+    /// Independently move color regions far enough to cross their neighbors.
+    pub(crate) fn with_scatter_wander(
+        self,
+        travel: f64,
+        motion: f32,
+        seed: u16,
+        distance: f32,
+    ) -> Self {
+        self.with_wander_strength(travel, motion, seed, distance)
+    }
+
+    /// Move and expand the glow center on separate, unlooped paths.
+    pub(crate) fn with_roaming_glow(mut self, travel: f64, motion: f32, seed: u16) -> Self {
+        assert!(travel.is_finite() && travel >= 0.0);
+        assert!(motion.is_finite() && (0.0..=1.5).contains(&motion));
+        let time = travel * 0.1;
+        let key = u64::from(seed) * 131;
+        let center_x = motion * 0.018 * (wander_path(time, key) - wander_path(0.0, key));
+        let center_y = motion * 0.018 * (wander_path(time, key + 1) - wander_path(0.0, key + 1));
+        let breathe =
+            1.0 + motion * 0.035 * (wander_path(time * 0.57, key + 2) - wander_path(0.0, key + 2));
+        for (index, point) in self.points.iter_mut().enumerate() {
+            let local = (index as u64) * 2;
+            let x = wander_path(time * 0.7, key + local + 3) - wander_path(0.0, key + local + 3);
+            let y = wander_path(time * 0.7, key + local + 4) - wander_path(0.0, key + local + 4);
+            point.position[0] = 0.5
+                + center_x
+                + (point.position[0] - 0.5) * breathe
+                + motion * 0.006 * x * self.x_scale;
+            point.position[1] =
+                0.5 + center_y + (point.position[1] - 0.5) * breathe + motion * 0.006 * y;
+        }
+        self
+    }
+
+    /// Keep a wash calm with broad, slow-moving color patches.
+    pub(crate) fn with_soft_wash(self, travel: f64, motion: f32, seed: u16) -> Self {
+        self.with_wander_strength(travel, motion, seed, 0.022)
+    }
+
+    fn with_wander_strength(mut self, travel: f64, motion: f32, seed: u16, distance: f32) -> Self {
         assert!(travel.is_finite() && travel >= 0.0);
         assert!(motion.is_finite() && (0.0..=1.5).contains(&motion));
         let time = travel * 0.18;
-        let amplitude = motion * 0.06;
+        let amplitude = motion * distance;
         for (index, point) in self.points.iter_mut().enumerate() {
             let key = u64::from(seed) * 131 + index as u64 * 2;
             point.position[0] +=
@@ -245,6 +289,14 @@ impl PreparedGradient {
 
     pub fn with_warp(mut self, warp: Warp) -> Self {
         self.warp = warp;
+        self
+    }
+
+    /// Add a localized, slowly wandering response to a transient sound pulse.
+    pub(crate) fn with_local_pulse(mut self, pulse: f32, travel: f64, seed: u16) -> Self {
+        self.warp = self
+            .warp
+            .with_local_pulse(pulse, travel, seed, self.x_scale);
         self
     }
 

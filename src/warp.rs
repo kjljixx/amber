@@ -12,14 +12,15 @@ use serde::{Deserialize, Serialize};
 const MAX_LAYERS: usize = 16;
 const MAX_WAVES: usize = 4;
 
-/// How a layer moves. `Cycle` loops with the animation phase; `Drift` slides
-/// without repeating; `Static` holds still.
+/// How a layer moves: `Cycle` loops, `Drift` slides steadily, `Wander` follows
+/// a smooth seeded path, and `Static` holds still.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerMotion {
     Static,
     Cycle,
     Drift,
+    Wander,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -33,7 +34,7 @@ pub enum WarpAxis {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerAnimation {
-    /// Defaults to the recipe's style: `loop` cycles; `flow` and `wander` drift.
+    /// Defaults to the recipe's style: `loop` cycles; `flow` drifts; `wander` wanders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<LayerMotion>,
     /// Drift direction; its length scales the distance travelled.
@@ -435,12 +436,23 @@ impl WarpStack {
                     falloff,
                     center,
                     pulse,
-                } => Step::Swirl {
-                    strength: *strength,
-                    falloff: *falloff,
-                    center: space(*center),
-                    pulse: 1.0 + pulse * sin,
-                },
+                } => {
+                    let modulation = match clock.inherited {
+                        LayerMotion::Cycle => sin,
+                        LayerMotion::Static => 0.0,
+                        LayerMotion::Drift | LayerMotion::Wander => {
+                            let time = (clock.travel * f64::from(clock.motion) * 0.08) as f32;
+                            let offset = f32::from(self.seed) * 0.173 + 0.37;
+                            fbm([time, offset]) - fbm([0.0, offset])
+                        }
+                    };
+                    Step::Swirl {
+                        strength: *strength,
+                        falloff: *falloff,
+                        center: space(*center),
+                        pulse: 1.0 + pulse * modulation,
+                    }
+                }
                 WarpLayer::Folds {
                     displace,
                     amplitude,
@@ -455,7 +467,12 @@ impl WarpStack {
                     } else {
                         0.0
                     };
-                    let drift = drift_offset(mode, animation, distance(animation));
+                    let drift = drift_offset(
+                        mode,
+                        animation,
+                        distance(animation),
+                        seed.unwrap_or(self.seed),
+                    );
                     Step::Folds {
                         displace: *displace,
                         amplitude: *amplitude,
@@ -487,7 +504,12 @@ impl WarpStack {
                     let mode = animation.mode.unwrap_or(clock.inherited);
                     let offset = match mode {
                         LayerMotion::Cycle => [(cos - 1.0) * orbit, sin * orbit],
-                        _ => drift_offset(mode, animation, distance(animation)),
+                        _ => drift_offset(
+                            mode,
+                            animation,
+                            distance(animation),
+                            seed.unwrap_or(self.seed),
+                        ),
                     };
                     Step::Noise {
                         seed_offset: seed_offsets(seed.unwrap_or(self.seed)),
@@ -523,6 +545,10 @@ impl WarpStack {
                             LayerMotion::Static => 0.0,
                             LayerMotion::Cycle => clock.phase,
                             LayerMotion::Drift => frequency * distance(animation),
+                            LayerMotion::Wander => {
+                                frequency
+                                    * wander_distance(distance(animation), animation, self.seed)
+                            }
                         },
                     }
                 }
@@ -532,15 +558,37 @@ impl WarpStack {
     }
 }
 
-fn drift_offset(mode: LayerMotion, animation: &LayerAnimation, distance: f32) -> [f32; 2] {
+fn drift_offset(
+    mode: LayerMotion,
+    animation: &LayerAnimation,
+    distance: f32,
+    seed: u16,
+) -> [f32; 2] {
     if mode == LayerMotion::Drift {
         [
             animation.direction[0] * distance,
             animation.direction[1] * distance,
         ]
+    } else if mode == LayerMotion::Wander {
+        let [sx, sy] = seed_offsets(seed);
+        let t = distance * 0.55;
+        let x = fbm([sx + t, sy + 0.31]) - fbm([sx, sy + 0.31]);
+        let y = fbm([sx + 0.27, sy + t * 0.83]) - fbm([sx + 0.27, sy]);
+        [
+            animation.direction[0] * x * 0.7,
+            animation.direction[1] * y * 0.7,
+        ]
     } else {
         [0.0, 0.0]
     }
+}
+
+fn wander_distance(distance: f32, animation: &LayerAnimation, seed: u16) -> f32 {
+    let [sx, sy] = seed_offsets(seed);
+    let t = distance * 0.55;
+    let x = fbm([sx + t, sy + 0.31]) - fbm([sx, sy + 0.31]);
+    let y = fbm([sx + 0.27, sy + t * 0.83]) - fbm([sx + 0.27, sy]);
+    animation.direction[0] * x * 0.7 + animation.direction[1] * y * 0.7
 }
 
 #[derive(Clone, Debug)]
@@ -585,6 +633,11 @@ enum Step {
         decay: f32,
         shift: f32,
     },
+    Pulse {
+        center: [f32; 2],
+        amplitude: f32,
+        radius: f32,
+    },
 }
 
 /// Posed layers for one frame. The default does nothing.
@@ -594,6 +647,31 @@ pub struct Warp {
 }
 
 impl Warp {
+    /// Add a soft, spatially local displacement for an audio pulse.
+    pub(crate) fn with_local_pulse(
+        mut self,
+        pulse: f32,
+        travel: f64,
+        seed: u16,
+        x_scale: f32,
+    ) -> Self {
+        if pulse <= 0.0 {
+            return self;
+        }
+        let time = (travel * 0.035) as f32;
+        let seed = f32::from(seed) * 0.173;
+        let center = [
+            (0.1 + 0.8 * noise([time, seed + 3.1]) - 0.5) * x_scale,
+            0.1 + 0.8 * noise([time * 0.83 + 7.7, seed + 11.9]) - 0.5,
+        ];
+        self.steps.push(Step::Pulse {
+            center,
+            amplitude: 0.055 * pulse.clamp(0.0, 1.5),
+            radius: 0.28,
+        });
+        self
+    }
+
     pub fn apply(&self, position: [f32; 2]) -> [f32; 2] {
         self.steps
             .iter()
@@ -610,7 +688,7 @@ impl Warp {
                     *amplitude *= intensity;
                 }
                 Step::Noise { strength, .. } => strength.iter_mut().for_each(|s| *s *= intensity),
-                Step::Tilt { .. } => {}
+                Step::Tilt { .. } | Step::Pulse { .. } => {}
             }
         }
         self
@@ -699,6 +777,20 @@ impl Step {
                 }
                 let push = amplitude * (-decay * radius).exp() * (frequency * radius - shift).sin();
                 [x + dx / radius * push, y + dy / radius * push]
+            }
+            Self::Pulse {
+                center,
+                amplitude,
+                radius,
+            } => {
+                let (dx, dy) = (x - center[0], y - center[1]);
+                let distance = dx.hypot(dy);
+                if distance < 1e-6 {
+                    return [x, y];
+                }
+                let reach = distance / radius;
+                let push = amplitude * reach * (-0.5 * reach * reach).exp();
+                [x + dx / distance * push, y + dy / distance * push]
             }
         }
     }

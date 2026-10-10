@@ -18,6 +18,21 @@ use crate::{
 const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 pub const DEFAULT_MODEL: &str = "typesafe/jev-1.13";
 
+/// Pick an unbiased warp seed from the operating system's random source.
+fn random_warp_seed() -> Result<u16, String> {
+    const RANGE: u16 = 1000;
+    const ACCEPT_BELOW: u16 = u16::MAX - (u16::MAX % RANGE);
+    loop {
+        let mut bytes = [0_u8; 2];
+        getrandom::fill(&mut bytes)
+            .map_err(|error| format!("Could not choose a random warp seed: {error}"))?;
+        let value = u16::from_le_bytes(bytes);
+        if value < ACCEPT_BELOW {
+            return Ok(value % RANGE);
+        }
+    }
+}
+
 /// Jev's layout choices are the scene grid rules.
 pub use crate::scene::GridRule as Layout;
 
@@ -189,8 +204,16 @@ impl Generator {
         }
         self.submitted = prompt.clone();
         if let Some(cached) = self.cache.get(&prompt.to_lowercase()) {
-            self.status = "Loaded cached gradient".into();
-            return Some(cached.clone());
+            let mut cached = cached.clone();
+            match random_warp_seed() {
+                Ok(seed) => cached.recipe.seed = seed,
+                Err(message) => {
+                    self.status = message;
+                    return None;
+                }
+            }
+            self.status = "Loaded cached design with a fresh warp".into();
+            return Some(cached);
         }
         let (send, receive) = mpsc::channel();
         self.status = "Jev is choosing colors, layout, and movement…".into();
@@ -389,6 +412,7 @@ impl Design {
     /// The scene this design describes: its three hues as the `main`, `second`
     /// and `accent` roles and one of the original grid layouts. The prompt
     /// seeds the placement, so the same prompt and decisions always agree.
+    /// Build a scene with deterministic point placement and a fresh warp seed.
     pub fn to_scene(&self, prompt: &str) -> Result<Scene, String> {
         for (name, value, max) in [
             ("lightness", self.lightness, 4.0),
@@ -434,18 +458,21 @@ impl Design {
             distortion: None,
             swirl: None,
             motion: None,
+            // Give each layout motion suited to its composition.
             motion_style: Some(match self.layout {
-                Layout::Sky | Layout::Horizon => crate::MotionStyle::Flow,
-                Layout::Glow | Layout::Scatter | Layout::Superscatter | Layout::Wash => {
-                    crate::MotionStyle::Wander
-                }
+                Layout::Sky => crate::MotionStyle::Flow,
+                Layout::Horizon => crate::MotionStyle::Flow,
+                Layout::Glow => crate::MotionStyle::Glow,
+                Layout::Scatter => crate::MotionStyle::Scatter,
+                Layout::Superscatter => crate::MotionStyle::Superscatter,
+                Layout::Wash => crate::MotionStyle::Wash,
             }),
-            warp_seed: 58,
+            warp_seed: random_warp_seed()?,
             warp: Vec::new(),
         })
     }
 
-    /// A deterministic composition for the same prompt and decisions.
+    /// A deterministic composition with a fresh random warp for each recipe.
     pub fn to_recipe(&self, prompt: &str) -> Result<Recipe, String> {
         self.to_scene(prompt)?.compile()
     }
@@ -506,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn every_layout_produces_a_valid_reproducible_recipe() {
+    fn every_layout_produces_a_valid_recipe_with_a_random_warp_seed() {
         let envelope: Envelope = serde_json::from_value(fixture()).unwrap();
         let mut design = parse_design(&envelope.answers).unwrap();
         for layout in [
@@ -518,9 +545,12 @@ mod tests {
             Layout::Wash,
         ] {
             design.layout = layout;
-            let a = design.to_recipe("a sunset over the sea").unwrap();
-            let b = design.to_recipe("a sunset over the sea").unwrap();
+            let mut a = design.to_recipe("a sunset over the sea").unwrap();
+            let mut b = design.to_recipe("a sunset over the sea").unwrap();
             assert_eq!(a.points.len(), 18);
+            assert!(a.seed < 1000 && b.seed < 1000);
+            a.seed = 0;
+            b.seed = 0;
             assert_eq!(
                 serde_json::to_value(a).unwrap(),
                 serde_json::to_value(b).unwrap()
@@ -555,7 +585,7 @@ mod tests {
         ] {
             let recipe = design.to_recipe(prompt).unwrap();
             assert_eq!(recipe.points.len(), 18);
-            assert_eq!(recipe.motion_style, crate::MotionStyle::Wander);
+            assert_eq!(recipe.motion_style, crate::MotionStyle::Superscatter);
             for (index, point) in recipe.points.iter().enumerate() {
                 for other in &recipe.points[..index] {
                     assert!(

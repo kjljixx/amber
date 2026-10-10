@@ -77,8 +77,8 @@ pub struct Reactivity {
     pub kick: f32,
     /// Extra speed at `activity` 1.
     pub busy: f32,
-    /// Extra warp strength at `pulse` 1, as a fraction of the recipe's own;
-    /// `activity` gives half as much and `level` a quarter.
+    /// Strength of the localized pulse ripple at `pulse` 1. Sustained `activity`
+    /// and `level` still increase the whole gradient's warp.
     pub warp: f32,
     /// Radians the picture moves when `tone` crosses its whole range.
     pub steer: f32,
@@ -220,12 +220,9 @@ impl GradientView {
     /// Warp multiplier, capped so a loud passage cannot tear the picture apart.
     fn warp_intensity(&self) -> f32 {
         let Excitement {
-            level,
-            pulse,
-            activity,
-            ..
+            level, activity, ..
         } = self.excitement;
-        (1.0 + self.reactivity.warp * (0.25 * level + 0.5 * activity + pulse)).clamp(0.0, 4.0)
+        (1.0 + self.reactivity.warp * (0.25 * level + 0.5 * activity)).clamp(0.0, 4.0)
     }
 
     fn sync_clock(&mut self, now: Instant) {
@@ -266,7 +263,7 @@ impl GradientView {
         let start = Instant::now();
         if area.width > 0 && area.height > 0 {
             let aspect = f32::from(area.width) / (2.0 * f32::from(area.height));
-            let field = self.recipe.prepare_intensified(
+            let mut field = self.recipe.prepare_intensified(
                 aspect,
                 self.animation.phase(),
                 self.animation.travel(),
@@ -274,6 +271,13 @@ impl GradientView {
                 self.playback.drifting,
                 self.warp_intensity(),
             );
+            if self.playback.warped && self.excitement.pulse > 0.0 {
+                field = field.with_local_pulse(
+                    self.excitement.pulse * self.reactivity.warp,
+                    self.animation.travel(),
+                    self.recipe.seed(),
+                );
+            }
             self.preview
                 .rebuild(area.width, area.height, |x, y| field.sample(x, y));
         } else {

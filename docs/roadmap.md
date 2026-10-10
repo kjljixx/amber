@@ -41,5 +41,3 @@ of the warp that point feels.
   color level.
 - **Point limit as a validation constant:** drop the fixed `[f32; MAX_POINTS]`
   stack array in `sample()` and keep only a generous load-time limit.
-- **Per-prompt warp seed:** derive it from the prompt hash; generated recipes
-  all use seed 58 today.

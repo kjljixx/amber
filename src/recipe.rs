@@ -3,7 +3,7 @@ use crate::{
     warp::{Clock, LayerMotion, Warp, WarpLayer, WarpStack},
 };
 
-/// Motion independent of the color layout. Older JSON recipes keep looping.
+/// Motion behavior for a recipe's color regions. Older JSON recipes keep looping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MotionStyle {
@@ -11,6 +11,13 @@ pub enum MotionStyle {
     Loop,
     Flow,
     Wander,
+    /// The glow center drifts and expands or contracts.
+    Glow,
+    /// Color regions wander far enough to cross one another.
+    Scatter,
+    Superscatter,
+    /// Broad color patches drift gently.
+    Wash,
 }
 
 /// Plain gradient settings, independent of terminal size and playback controls.
@@ -77,6 +84,10 @@ impl Recipe {
 }
 
 impl CompiledRecipe {
+    pub(crate) fn seed(&self) -> u16 {
+        self.warp.seed()
+    }
+
     pub fn prepare(
         &self,
         aspect: f32,
@@ -116,6 +127,14 @@ impl CompiledRecipe {
             MotionStyle::Loop => field.with_drift(phase, motion),
             MotionStyle::Flow => field,
             MotionStyle::Wander => field.with_wander(travel, motion, self.warp.seed()),
+            MotionStyle::Glow => field.with_roaming_glow(travel, motion, self.warp.seed()),
+            MotionStyle::Scatter => {
+                field.with_scatter_wander(travel, motion, self.warp.seed(), 0.12)
+            }
+            MotionStyle::Superscatter => {
+                field.with_scatter_wander(travel, motion, self.warp.seed(), 0.15)
+            }
+            MotionStyle::Wash => field.with_soft_wash(travel, motion, self.warp.seed()),
         };
         field.with_warp(if warped {
             self.warp
@@ -124,9 +143,12 @@ impl CompiledRecipe {
                     travel,
                     motion,
                     aspect,
-                    inherited: match self.motion_style {
-                        MotionStyle::Loop => LayerMotion::Cycle,
-                        MotionStyle::Flow | MotionStyle::Wander => LayerMotion::Drift,
+                    inherited: if self.motion_style == MotionStyle::Loop {
+                        LayerMotion::Cycle
+                    } else if self.motion_style == MotionStyle::Flow {
+                        LayerMotion::Drift
+                    } else {
+                        LayerMotion::Wander
                     },
                 })
                 .intensified(intensity)
