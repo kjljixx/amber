@@ -272,6 +272,8 @@ mod lookup {
     /// description of the time alone.
     const WAIT: Duration = Duration::from_secs(3);
     const REQUEST_TIMEOUT: Duration = Duration::from_millis(2500);
+    /// Refresh the weather context while the timer is running.
+    const REFRESH: Duration = Duration::from_secs(5 * 60);
 
     /// Whose weather to describe.
     #[derive(Clone, Debug, PartialEq)]
@@ -318,12 +320,12 @@ mod lookup {
         }
     }
 
-    /// The weather at `place`, with `get` fetching a URL's text.
-    fn weather_at(
+    /// Resolve a place to coordinates, with `get` fetching a URL's text.
+    fn locate(
         place: &Place,
         get: &dyn Fn(&str) -> Result<String, String>,
-    ) -> Result<Weather, String> {
-        let (latitude, longitude) = match place {
+    ) -> Result<(f64, f64), String> {
+        Ok(match place {
             Place::Here => {
                 let located: Located = serde_json::from_str(&get("https://ipwho.is/")?)
                     .map_err(|_| "Unexpected location response".to_string())?;
@@ -342,8 +344,42 @@ mod lookup {
                     .ok_or(format!("No place called '{name}'"))?;
                 coordinates(&first)?
             }
-        };
+        })
+    }
+
+    /// Fetch a forecast for already-resolved coordinates.
+    fn forecast_at(
+        latitude: f64,
+        longitude: f64,
+        get: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<Weather, String> {
         parse_forecast(&get(&forecast_url(latitude, longitude))?)
+    }
+
+    /// The weather at `place`, with `get` fetching a URL's text.
+    #[cfg(test)]
+    fn weather_at(
+        place: &Place,
+        get: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<Weather, String> {
+        let (latitude, longitude) = locate(place, get)?;
+        forecast_at(latitude, longitude, get)
+    }
+
+    fn weather_with_coordinates(
+        place: &Place,
+        get: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<(Weather, (f64, f64)), String> {
+        let coordinates = locate(place, get)?;
+        let weather = forecast_at(coordinates.0, coordinates.1, get)?;
+        Ok((weather, coordinates))
+    }
+
+    fn forecast_with_coordinates(
+        coordinates: (f64, f64),
+        get: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<Weather, String> {
+        forecast_at(coordinates.0, coordinates.1, get)
     }
 
     fn http_get(url: &str) -> Result<String, String> {
@@ -364,55 +400,104 @@ mod lookup {
             .map_err(|_| "Could not read the weather response".to_string())
     }
 
-    /// Finds the weather on a worker thread and turns it into a description.
-    ///
-    /// Call [`poll`](Self::poll) from the event loop until it returns the
-    /// moment, which it does once, after the weather arrives or at the
-    /// latest [`WAIT`] later, with the time alone if the weather could not be
-    /// had: no network, an unknown place, anything. Starting with no place
-    /// does no lookup at all and answers on the first poll.
+    /// Finds the weather on a worker thread and refreshes the moment every
+    /// [`REFRESH`]. Location coordinates are kept between forecast requests.
+    /// If a request fails, the latest moment falls back to local time alone.
     pub struct Ambient {
+        place: Option<Place>,
+        coordinates: Option<(f64, f64)>,
         started: Instant,
-        receive: Option<Receiver<Result<Weather, String>>>,
-        done: bool,
+        next_refresh: Instant,
+        receive: Option<Receiver<Result<(Weather, (f64, f64)), String>>>,
+        initial_pending: bool,
     }
 
     impl Ambient {
         pub fn start(place: Option<Place>) -> Self {
-            let receive = place.and_then(|place| {
-                let (send, receive) = mpsc::channel();
-                std::thread::Builder::new()
-                    .name("ambient-weather".into())
-                    .spawn(move || {
-                        let _ = send.send(weather_at(&place, &http_get));
-                    })
-                    .ok()?;
-                Some(receive)
-            });
+            let started = Instant::now();
+            let receive = place
+                .as_ref()
+                .and_then(|place| Self::request(place.clone(), None));
             Self {
-                started: Instant::now(),
+                place,
+                coordinates: None,
+                started,
+                next_refresh: started + REFRESH,
                 receive,
-                done: false,
+                initial_pending: true,
             }
+        }
+
+        fn request(
+            place: Place,
+            coordinates: Option<(f64, f64)>,
+        ) -> Option<Receiver<Result<(Weather, (f64, f64)), String>>> {
+            let (send, receive) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("ambient-weather".into())
+                .spawn(move || {
+                    let result = match coordinates {
+                        Some(coordinates) => forecast_with_coordinates(coordinates, &http_get)
+                            .map(|weather| (weather, coordinates)),
+                        None => weather_with_coordinates(&place, &http_get),
+                    };
+                    let _ = send.send(result);
+                })
+                .ok()?;
+            Some(receive)
         }
 
         /// Whether [`poll`](Self::poll) still has a description to give.
         pub fn is_pending(&self) -> bool {
-            !self.done
+            self.initial_pending
         }
 
+        /// Return an updated moment when the initial lookup finishes and then
+        /// every five minutes. This is polled from the timer's event loop.
         pub fn poll(&mut self) -> Option<Moment> {
-            if self.done {
-                return None;
+            if let Some(receive) = self.receive.as_ref() {
+                match receive.try_recv() {
+                    Ok(Ok((weather, coordinates))) => {
+                        self.coordinates = Some(coordinates);
+                        self.receive = None;
+                        self.initial_pending = false;
+                        self.next_refresh = self.started + REFRESH;
+                        return Some(Moment::new(Local::now().naive_local(), Some(&weather)));
+                    }
+                    Ok(Err(_)) => {
+                        self.receive = None;
+                        self.initial_pending = false;
+                        self.next_refresh = self.started + REFRESH;
+                        return Some(Moment::new(Local::now().naive_local(), None));
+                    }
+                    Err(TryRecvError::Empty) if self.started.elapsed() < WAIT => return None,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                        self.receive = None;
+                        self.initial_pending = false;
+                        self.next_refresh = self.started + REFRESH;
+                        return Some(Moment::new(Local::now().naive_local(), None));
+                    }
+                }
             }
-            let weather = match self.receive.as_ref().map(Receiver::try_recv) {
-                Some(Ok(result)) => result.ok(),
-                Some(Err(TryRecvError::Empty)) if self.started.elapsed() < WAIT => return None,
-                _ => None,
-            };
-            self.done = true;
-            self.receive = None;
-            Some(Moment::new(Local::now().naive_local(), weather.as_ref()))
+
+            if self.initial_pending {
+                self.initial_pending = false;
+                return Some(Moment::new(Local::now().naive_local(), None));
+            }
+
+            if Instant::now() >= self.next_refresh {
+                self.started = Instant::now();
+                self.next_refresh = self.started + REFRESH;
+                if let Some(place) = self.place.clone() {
+                    self.receive = Self::request(place, self.coordinates);
+                    if self.receive.is_some() {
+                        return None;
+                    }
+                }
+                return Some(Moment::new(Local::now().naive_local(), None));
+            }
+
+            None
         }
     }
 
@@ -494,9 +579,12 @@ mod lookup {
         fn a_slow_lookup_is_waited_for_and_then_given_up_on() {
             let (_send, receive) = mpsc::channel();
             let mut ambient = Ambient {
+                place: Some(Place::Here),
+                coordinates: None,
                 started: Instant::now(),
+                next_refresh: Instant::now() + REFRESH,
                 receive: Some(receive),
-                done: false,
+                initial_pending: true,
             };
             assert_eq!(ambient.poll(), None);
             ambient.started -= WAIT;
@@ -507,11 +595,15 @@ mod lookup {
         #[test]
         fn a_lookup_that_arrives_is_described_with_its_weather() {
             let (send, receive) = mpsc::channel();
-            send.send(parse_forecast(FORECAST)).unwrap();
+            send.send(parse_forecast(FORECAST).map(|weather| (weather, (30.27, -97.75))))
+                .unwrap();
             let mut ambient = Ambient {
+                place: Some(Place::Here),
+                coordinates: None,
                 started: Instant::now(),
+                next_refresh: Instant::now() + REFRESH,
                 receive: Some(receive),
-                done: false,
+                initial_pending: true,
             };
             assert_eq!(
                 ambient.poll().unwrap(),

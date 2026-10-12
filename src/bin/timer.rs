@@ -37,6 +37,7 @@
 //! weather ("golden hour, light rain"), so the task leads. The weather is for
 //! wherever the machine's IP address seems to be; `--location Lisbon` names a
 //! place instead, and `--no-weather` skips the lookup and uses the time alone.
+//! The moment refreshes every five minutes while the timer runs.
 //! Only those words go to Jev, never the place.
 //!
 //! When a phase ends, a chime plays and a desktop notification appears: a

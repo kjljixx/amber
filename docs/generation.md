@@ -175,6 +175,8 @@ the whole of it let the weather decide the gradient.
   describes the time alone.
 - The timer waits up to 3 seconds for the weather; the default gradient plays
   meanwhile. If the lookup fails or is slow, the description is the time alone.
+- While the timer runs, it refreshes the weather and moment every 5 minutes.
+  It resolves the location once and reuses those coordinates for later forecasts.
 - Only the description goes to Jev. The place's name never does.
 - Day parts follow the sun when the forecast has sunrise and sunset (dawn,
   golden hour, dusk) and the clock otherwise. The time used is the local time
