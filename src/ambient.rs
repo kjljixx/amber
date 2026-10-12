@@ -6,7 +6,7 @@
 //! worker thread, with [Open-Meteo](https://open-meteo.com) for the forecast
 //! (no key needed) and `ipwho.is` to find roughly where the machine is, unless
 //! a place is named. Nothing here knows about Jev or gradients.
-use chrono::{Datelike, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, NaiveDateTime, Timelike};
 use serde::Deserialize;
 
 /// The weather where, and when, it was asked about.
@@ -196,16 +196,17 @@ fn day_part(now: NaiveDateTime, sun: Option<(NaiveDateTime, NaiveDateTime)>) -> 
 pub fn describe(local_now: NaiveDateTime, weather: Option<&Weather>) -> String {
     let now = weather.map_or(local_now, |weather| weather.now);
     let sun = weather.and_then(|w| Some((w.sunrise?, w.sunset?)));
-    let mut text = format!(
-        "{} {} in {}",
-        now.format("%A"),
-        day_part(now, sun),
-        now.format("%B")
-    );
+    let part = day_part(now, sun);
+    let date = if part == "late night" {
+        now - Duration::days(1)
+    } else {
+        now
+    };
+    let mut text = format!("{} {} in {}", date.format("%A"), part, date.format("%B"));
     let Some(weather) = weather else {
         return text;
     };
-    if let Some(season) = season(now.month(), weather.latitude) {
+    if let Some(season) = season(date.month(), weather.latitude) {
         text.push_str(&format!(" ({season})"));
     }
     let wind = wind_words(weather.wind_kmh);
@@ -722,6 +723,19 @@ mod tests {
 
     #[test]
     fn without_weather_it_is_the_local_clock_alone() {
+        assert_eq!(
+            describe(time("2026-03-01T08:15"), None),
+            "Sunday morning in March"
+        );
+    }
+
+    #[test]
+    fn late_night_belongs_to_the_day_before() {
+        // 2026-03-01 is a Sunday; at 1 am it is still Saturday night, in February.
+        assert_eq!(
+            describe(time("2026-03-01T01:00"), None),
+            "Saturday late night in February"
+        );
         assert_eq!(
             describe(time("2026-03-01T08:15"), None),
             "Sunday morning in March"
