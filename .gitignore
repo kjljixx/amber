@@ -1,4 +1,5 @@
 /target
+/focus-debug/
 .env
 .env.*
 !.env.example

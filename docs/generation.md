@@ -92,7 +92,9 @@ below), and once it has made a gradient the task stays above the clock until a
 new one replaces it.
 
 The focus checker compares the selected task with a screenshot every 20
-seconds by default, starting 20 seconds after you choose a task:
+seconds by default, starting 20 seconds after you choose a task. It pauses when
+the timer is paused or during Pomodoro breaks, then starts a fresh 20-second
+delay when work resumes:
 
 ```sh
 cargo run --offline --bin timer
@@ -100,10 +102,32 @@ cargo run --offline --bin timer
 
 Pass `--no-focus-check` to disable it for a run.
 
+Pass `--focus-debug` to enable focus checks and save a local trace under
+`focus-debug/run-<timestamp>-<pid>/`. The `events.log` file records timestamps,
+the selected task and work/break state, check scheduling and capture timing,
+model request/response details and decisions, errors, off-task streak changes,
+Pomodoro phase changes, notification requests and command results, and overlay
+events. Each check's screenshot is saved as
+`check-NNNN.jpg`, and the raw model response is saved as
+`check-NNNN-response.json`. These files can contain your screen contents, task
+text, and model response; the directory is ignored by Git.
+
 GPT-6 Luna Decisions receives the screenshot and task text through OpenRouter.
 From the second consecutive off-task decision onward, each off-task check sends
-a desktop notification. An on-task decision resets the streak. Choosing a
-different task starts a new sequence. `FOCUS_MODEL` can override the default
+a desktop notification and shows an always-on-top overlay with a dark, padded
+panel behind the reminder for eight seconds. The title is “Let's get back on
+track” and the supporting line is “Don't get distracted. Stay focused on your
+task” in both places. The timer caption combines the same two lines. After the
+first off-task decision, checks run every five seconds until an on-task
+decision, then return to twenty-second intervals. A later off-task decision
+can show the overlay again for eight seconds if it has already closed. The
+transparent overlay window does not switch to a separate fullscreen Space.
+Choosing a new task starts a new sequence. To preview the overlay directly,
+run
+`cargo run --offline --bin timer -- --focus-overlay
+"Let's get back on track"`; it closes after eight seconds, or press Enter in
+that terminal to close it sooner.
+`FOCUS_MODEL` can override the default
 `openai/gpt-6-luna-decisions`. The first macOS capture invokes the system
 Screen Recording permission flow; allow Amber in System Settings → Privacy &
 Security → Screen & System Audio Recording and restart Amber if capture does

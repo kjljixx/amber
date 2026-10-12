@@ -3,12 +3,19 @@
 
 use std::{
     collections::BTreeMap,
-    path::Path,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
     time::{Duration, Instant},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::{SecondsFormat, Utc};
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde::Deserialize;
 use serde_json::json;
@@ -17,41 +24,146 @@ const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 const DEFAULT_MODEL: &str = "openai/gpt-6-luna-decisions";
 const INITIAL_DELAY: Duration = Duration::from_secs(20);
 const INTERVAL: Duration = Duration::from_secs(20);
-const OFF_TASK_THRESHOLD: f64 = 0.8;
+const OVERLAY_INTERVAL: Duration = Duration::from_secs(5);
+const OFF_TASK_THRESHOLD: f64 = 0.5;
+
+pub const OFF_TASK_TITLE: &str = "Let's get back on track";
+pub const OFF_TASK_BODY: &str = "Don't get distracted. Stay focused on your task";
+
+#[derive(Clone)]
+pub struct DebugLog {
+    inner: Arc<Mutex<DebugLogInner>>,
+}
+
+struct DebugLogInner {
+    directory: PathBuf,
+    events: File,
+}
+
+impl DebugLog {
+    fn create(base: &Path) -> std::io::Result<Self> {
+        fs::create_dir_all(base)?;
+        let run_name = format!(
+            "run-{}-{}",
+            Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+            std::process::id()
+        );
+        let directory = base.join(run_name);
+        fs::create_dir(&directory)?;
+        let events = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(directory.join("events.log"))?;
+        let logger = Self {
+            inner: Arc::new(Mutex::new(DebugLogInner { directory, events })),
+        };
+        logger.log("debug_session_started");
+        Ok(logger)
+    }
+
+    pub fn directory(&self) -> Option<PathBuf> {
+        self.inner.lock().ok().map(|inner| inner.directory.clone())
+    }
+
+    pub fn log(&self, event: impl AsRef<str>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let _ = writeln!(inner.events, "{timestamp} {}", event.as_ref());
+            let _ = inner.events.flush();
+        }
+    }
+
+    fn save(&self, name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+        let directory = self
+            .directory()
+            .ok_or_else(|| std::io::Error::other("debug log lock is unavailable"))?;
+        let path = directory.join(name);
+        fs::write(&path, contents)?;
+        Ok(path)
+    }
+}
 
 #[derive(Debug)]
 pub enum Event {
     /// The off-task streak reached two or more.
     OffTask,
+    /// The latest completed decision says the user is back on task.
+    OnTask,
     /// A permission, capture, or API request needs attention.
     Error(String),
 }
 
-type Pending = (String, Receiver<Result<bool, String>>);
+#[derive(Clone, Copy)]
+struct Decision {
+    probability: f64,
+    off_task: bool,
+}
 
-/// Checks one explicitly selected timer task at 20-second intervals.
+type Pending = (
+    u64,
+    String,
+    Receiver<Result<Decision, String>>,
+    Arc<AtomicBool>,
+);
+
+/// Checks one explicitly selected timer task, more frequently after an
+/// off-task decision until an on-task decision arrives.
 pub struct FocusChecker {
     client: Client,
     task: Option<String>,
     next_check: Option<Instant>,
     pending: Option<Pending>,
     off_task_count: u8,
+    interval: Duration,
+    monitor_active: bool,
+    next_check_id: u64,
+    debug: Option<DebugLog>,
 }
 
 impl FocusChecker {
-    pub fn from_env(path: &Path) -> Result<Self, String> {
+    pub fn from_env(path: &Path, debug_enabled: bool) -> Result<Self, String> {
+        let client = Client::from_env(path)?;
+        let debug = if debug_enabled {
+            Some(
+                DebugLog::create(Path::new("focus-debug"))
+                    .map_err(|error| format!("Could not create focus-debug log: {error}"))?,
+            )
+        } else {
+            None
+        };
+        if let Some(debug) = &debug {
+            if let Some(directory) = debug.directory() {
+                debug.log(format!("log_directory={directory:?}"));
+            }
+            debug.log(format!(
+                "config model={:?} initial_delay_secs={} normal_interval_secs={} off_task_interval_secs={} threshold={}",
+                client.model,
+                INITIAL_DELAY.as_secs(),
+                INTERVAL.as_secs(),
+                OVERLAY_INTERVAL.as_secs(),
+                OFF_TASK_THRESHOLD
+            ));
+            debug.log("state task=None monitor_active=true streak=0");
+        }
         Ok(Self {
-            client: Client::from_env(path)?,
+            client,
             task: None,
             next_check: None,
             pending: None,
             off_task_count: 0,
+            interval: INTERVAL,
+            monitor_active: true,
+            next_check_id: 1,
+            debug,
         })
     }
 
+    pub fn debug_log(&self) -> Option<DebugLog> {
+        self.debug.clone()
+    }
+
     /// Begin a fresh sequence when the selected task changes. The first image
-    /// is captured twenty seconds later, then once every twenty seconds while
-    /// that task stays selected.
+    /// follows the current cadence, then checks repeat at that interval.
     pub fn set_task(&mut self, task: Option<String>, now: Instant) {
         let task = task
             .map(|task| task.trim().to_owned())
@@ -59,9 +171,37 @@ impl FocusChecker {
         if self.task == task {
             return;
         }
+        self.discard_pending("task_changed");
+        if let Some(debug) = &self.debug {
+            debug.log(format!("task_selected task={task:?}"));
+        }
         self.task = task;
-        self.next_check = self.task.as_ref().map(|_| now + INITIAL_DELAY);
+        self.interval = INTERVAL;
+        self.next_check =
+            (self.monitor_active && self.task.is_some()).then_some(now + INITIAL_DELAY);
         self.off_task_count = 0;
+        self.log_state("task_changed");
+    }
+
+    /// Suspend captures during breaks. A pending result belongs to the previous
+    /// work period, so discard it and start fresh when work resumes.
+    pub fn set_work_active(&mut self, active: bool, now: Instant) {
+        if self.monitor_active == active {
+            return;
+        }
+        self.monitor_active = active;
+        self.discard_pending(if active {
+            "work_resumed"
+        } else {
+            "break_started"
+        });
+        if let Some(debug) = &self.debug {
+            debug.log(format!("monitor_active={active}"));
+        }
+        self.off_task_count = 0;
+        self.interval = INTERVAL;
+        self.next_check = (active && self.task.is_some()).then_some(now + INITIAL_DELAY);
+        self.log_state("work_active_changed");
     }
 
     pub fn time_until_next(&self, now: Instant) -> Option<Duration> {
@@ -74,33 +214,65 @@ impl FocusChecker {
 
     /// Start a due check and return any completed decision or failure.
     pub fn poll(&mut self, now: Instant) -> Option<Event> {
-        if let Some((task, result)) = self
+        if !self.monitor_active {
+            return None;
+        }
+
+        if let Some((check_id, task, result)) = self
             .pending
             .as_ref()
-            .map(|(task, receiver)| (task.clone(), receiver.try_recv()))
+            .map(|(check_id, task, receiver, _)| (*check_id, task.clone(), receiver.try_recv()))
         {
             match result {
                 Ok(result) => {
                     self.pending = None;
                     if self.task.as_deref() == Some(task.as_str()) {
                         match result {
-                            Ok(off_task) => {
-                                if off_task {
+                            Ok(decision) => {
+                                if let Some(debug) = &self.debug {
+                                    debug.log(format!(
+                                        "model_decision check_id={check_id} task={task:?} probability_off_task={:.6} off_task={}",
+                                        decision.probability,
+                                        decision.off_task
+                                    ));
+                                }
+                                if decision.off_task {
                                     self.off_task_count = self.off_task_count.saturating_add(1);
+                                    self.interval = OVERLAY_INTERVAL;
+                                    self.next_check = Some(now + self.interval);
+                                    self.log_state("off_task");
                                     if self.off_task_count >= 2 {
                                         return Some(Event::OffTask);
                                     }
                                 } else {
                                     self.off_task_count = 0;
+                                    self.interval = INTERVAL;
+                                    self.next_check = Some(now + self.interval);
+                                    self.log_state("on_task");
+                                    return Some(Event::OnTask);
                                 }
                             }
-                            Err(message) => return Some(Event::Error(message)),
+                            Err(message) => {
+                                if let Some(debug) = &self.debug {
+                                    debug.log(format!(
+                                        "check_error check_id={check_id} task={task:?} error={message:?}"
+                                    ));
+                                }
+                                self.log_state("check_error");
+                                return Some(Event::Error(message));
+                            }
                         }
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
                     self.pending = None;
                     if self.task.as_deref() == Some(task.as_str()) {
+                        if let Some(debug) = &self.debug {
+                            debug.log(format!(
+                                "check_error check_id={check_id} task={task:?} error=worker_disconnected"
+                            ));
+                        }
+                        self.log_state("worker_disconnected");
                         return Some(Event::Error("Focus check stopped unexpectedly".into()));
                     }
                 }
@@ -114,17 +286,106 @@ impl FocusChecker {
         {
             let task = self.task.clone().unwrap_or_default();
             let client = self.client.clone();
+            let check_id = self.next_check_id;
+            self.next_check_id = self.next_check_id.saturating_add(1);
             let (send, receive) = mpsc::channel();
-            self.next_check = Some(now + INTERVAL);
-            self.pending = Some((task.clone(), receive));
-            let _ = std::thread::Builder::new()
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let worker_cancelled = Arc::clone(&cancelled);
+            self.next_check = Some(now + self.interval);
+            self.pending = Some((check_id, task.clone(), receive, cancelled));
+            let debug = self.debug.clone();
+            if let Some(debug) = &debug {
+                debug.log(format!(
+                    "check_started check_id={check_id} task={task:?} monitor_active={} streak={} interval_secs={}",
+                    self.monitor_active,
+                    self.off_task_count,
+                    self.interval.as_secs()
+                ));
+            }
+            let spawn = std::thread::Builder::new()
                 .name("focus-check".into())
                 .spawn(move || {
-                    let result = capture_jpeg().and_then(|image| client.is_off_task(&task, &image));
-                    let _ = send.send(result);
+                    if worker_cancelled.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let capture_started = Instant::now();
+                    if let Some(debug) = &debug {
+                        debug.log(format!("capture_started check_id={check_id}"));
+                    }
+                    let result = match capture_jpeg() {
+                        Ok(image) => {
+                            if let Some(debug) = &debug {
+                                match debug.save(&format!("check-{check_id:04}.jpg"), &image) {
+                                    Ok(path) => debug.log(format!(
+                                        "capture_saved check_id={check_id} path={:?} bytes={} elapsed_ms={}",
+                                        path,
+                                        image.len(),
+                                        capture_started.elapsed().as_millis()
+                                    )),
+                                    Err(error) => debug.log(format!(
+                                        "capture_save_error check_id={check_id} error={error:?}"
+                                    )),
+                                }
+                            }
+                            if worker_cancelled.load(Ordering::Relaxed) {
+                                if let Some(debug) = &debug {
+                                    debug.log(format!(
+                                        "check_cancelled check_id={check_id} before_model_request"
+                                    ));
+                                }
+                                return;
+                            }
+                            client.is_off_task(&task, &image, check_id, debug.as_ref())
+                        }
+                        Err(message) => {
+                            if let Some(debug) = &debug {
+                                debug.log(format!(
+                                    "capture_error check_id={check_id} error={message:?} elapsed_ms={}",
+                                    capture_started.elapsed().as_millis()
+                                ));
+                            }
+                            Err(message)
+                        }
+                    };
+                    if !worker_cancelled.load(Ordering::Relaxed) {
+                        let _ = send.send(result);
+                    }
                 });
+            if let Err(error) = spawn {
+                self.pending = None;
+                if let Some(debug) = &self.debug {
+                    debug.log(format!(
+                        "check_spawn_error check_id={check_id} error={error:?}"
+                    ));
+                }
+                return Some(Event::Error("Could not start focus check".into()));
+            }
         }
         None
+    }
+
+    fn discard_pending(&mut self, reason: &str) {
+        if let Some((check_id, _, _, cancelled)) = self.pending.take() {
+            cancelled.store(true, Ordering::Relaxed);
+            if let Some(debug) = &self.debug {
+                debug.log(format!(
+                    "check_cancelled check_id={check_id} reason={reason}"
+                ));
+            }
+        }
+    }
+
+    fn log_state(&self, reason: &str) {
+        if let Some(debug) = &self.debug {
+            debug.log(format!(
+                "focus_state reason={reason} task={:?} monitor_active={} streak={} interval_secs={} next_check_id={}",
+                self.task,
+                self.monitor_active,
+                self.off_task_count,
+                self.interval.as_secs(),
+                self.next_check_id
+            ));
+        }
     }
 }
 
@@ -170,12 +431,21 @@ impl Client {
         })
     }
 
-    fn is_off_task(&self, task: &str, jpeg: &[u8]) -> Result<bool, String> {
+    fn is_off_task(
+        &self,
+        task: &str,
+        jpeg: &[u8],
+        check_id: u64,
+        debug: Option<&DebugLog>,
+    ) -> Result<Decision, String> {
         let data_url = format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg));
+        let prompt = format!(
+            "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If Amber's reminder overlay is visible, ignore its text and judge the underlying activity. If the screenshot is ambiguous, judge it on task."
+        );
         let request = json!({
             "model": self.model,
             "state": [
-                format!("The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If the screenshot is ambiguous, judge it on task."),
+                prompt,
                 {"type": "image_url", "image_url": {"url": data_url}}
             ],
             "questions": {
@@ -189,26 +459,70 @@ impl Client {
                 }
             }
         });
-        let mut response = self
+        let model_started = Instant::now();
+        if let Some(debug) = debug {
+            debug.log(format!(
+                "model_request_started check_id={check_id} model={:?} task={task:?} prompt={prompt:?} screenshot=check-{check_id:04}.jpg",
+                self.model
+            ));
+        }
+        let response = self
             .agent
             .post(ENDPOINT)
             .header("Authorization", format!("Bearer {}", self.key))
             .header("Content-Type", "application/json")
             .header("X-Title", "Amber Focus Check")
-            .send_json(&request)
-            .map_err(|_| "Could not reach OpenRouter (connection or timeout)".to_string())?;
-        match response.status().as_u16() {
+            .send_json(&request);
+        let mut response = match response {
+            Ok(response) => response,
+            Err(_) => {
+                if let Some(debug) = debug {
+                    debug.log(format!(
+                        "model_request_error check_id={check_id} error=connection_or_timeout elapsed_ms={}",
+                        model_started.elapsed().as_millis()
+                    ));
+                }
+                return Err("Could not reach OpenRouter (connection or timeout)".into());
+            }
+        };
+        let status = response.status().as_u16();
+        let raw = match response
+            .body_mut()
+            .with_config()
+            .limit(128 * 1024)
+            .read_to_string()
+        {
+            Ok(raw) => raw,
+            Err(_) => {
+                if let Some(debug) = debug {
+                    debug.log(format!(
+                        "model_response_read_error check_id={check_id} status={status} elapsed_ms={}",
+                        model_started.elapsed().as_millis()
+                    ));
+                }
+                return Err("OpenRouter returned an invalid focus decision".into());
+            }
+        };
+        if let Some(debug) = debug {
+            match debug.save(&format!("check-{check_id:04}-response.json"), raw.as_bytes()) {
+                Ok(path) => debug.log(format!(
+                    "model_response check_id={check_id} status={status} path={path:?} elapsed_ms={} raw={raw:?}",
+                    model_started.elapsed().as_millis()
+                )),
+                Err(error) => debug.log(format!(
+                    "model_response check_id={check_id} status={status} save_error={error:?} elapsed_ms={} raw={raw:?}",
+                    model_started.elapsed().as_millis()
+                )),
+            }
+        }
+        match status {
             200..=299 => {}
             401 | 403 => return Err("OpenRouter rejected the API key or model access".into()),
             402 => return Err("OpenRouter account needs credits".into()),
             429 => return Err("OpenRouter rate limit reached; try again shortly".into()),
             code => return Err(format!("OpenRouter returned HTTP {code}")),
         }
-        let envelope: Envelope = response
-            .body_mut()
-            .with_config()
-            .limit(128 * 1024)
-            .read_json()
+        let envelope: Envelope = serde_json::from_str(&raw)
             .map_err(|_| "OpenRouter returned an invalid focus decision".to_string())?;
         let probability = envelope
             .answers
@@ -217,7 +531,16 @@ impl Client {
             .map(|answer| answer.noul)
             .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
             .ok_or_else(|| "OpenRouter omitted the off-task probability".to_string())?;
-        Ok(probability >= OFF_TASK_THRESHOLD)
+        let off_task = probability >= OFF_TASK_THRESHOLD;
+        if let Some(debug) = debug {
+            debug.log(format!(
+                "model_output check_id={check_id} probability_off_task={probability:.6} threshold={OFF_TASK_THRESHOLD} off_task={off_task}"
+            ));
+        }
+        Ok(Decision {
+            probability,
+            off_task,
+        })
     }
 }
 

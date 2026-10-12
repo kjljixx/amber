@@ -157,6 +157,11 @@ impl Digits {
         })
     }
 
+    /// Change the digit color without rebuilding the layout.
+    pub fn set_color(&mut self, color: Rgb) {
+        self.color = color;
+    }
+
     /// The smallest rectangle of terminal cells that holds the digits when they
     /// are rendered into `area`, or `None` if nothing fits and nothing is drawn.
     /// A host can use it to place something next to the digits.

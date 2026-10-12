@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 const SAMPLE_RATE: u32 = 44_100;
@@ -239,6 +240,94 @@ pub fn play(chime: Chime) -> JoinHandle<Played> {
 pub fn notify(title: &str, body: &str) -> JoinHandle<bool> {
     let command = notifier(std::env::consts::OS, title, body);
     thread::spawn(move || run(&command))
+}
+
+/// Handle for the cross-platform dimming overlay child process.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub struct FocusOverlay {
+    child: Option<std::process::Child>,
+    input: Option<std::process::ChildStdin>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl FocusOverlay {
+    /// Whether the overlay child process is still alive.
+    pub fn is_running(&mut self) -> bool {
+        self.child
+            .as_mut()
+            .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_none()))
+    }
+
+    /// Ask the overlay to close, then reap its process in the background.
+    pub fn close(mut self) {
+        self.request_close();
+        if let Some(mut child) = self.child.take() {
+            thread::spawn(move || {
+                let started = std::time::Instant::now();
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) if started.elapsed() < Duration::from_secs(2) => {
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                        Ok(None) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    fn request_close(&mut self) {
+        if let Some(mut input) = self.input.take() {
+            let _ = input.write_all(b"close\n").and_then(|()| input.flush());
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for FocusOverlay {
+    fn drop(&mut self) {
+        self.request_close();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Open the cross-platform dimming overlay without blocking the timer.
+pub fn show_focus_overlay(message: &str) -> std::io::Result<Option<FocusOverlay>> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("--focus-overlay")
+            .arg(message)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command.spawn()?;
+        let input = child.stdin.take();
+        Ok(Some(FocusOverlay {
+            child: Some(child),
+            input,
+        }))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = message;
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
