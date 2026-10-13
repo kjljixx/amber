@@ -4,11 +4,18 @@
 //! The token is only ever sent to `api.todoist.com`, and only read: nothing here
 //! changes anything in the account. [`Todoist::tasks`] makes the requests, which
 //! block, so a host runs it on a worker thread, as [`super::Loader`] does.
-use std::{cmp::Reverse, collections::HashMap, fmt, path::Path, time::Duration};
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    fmt,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
+use tracing::{debug, warn};
 
 use super::{Due, Task};
 use crate::generation::dotenv_settings;
@@ -94,10 +101,19 @@ impl Todoist {
             for (name, value) in query {
                 request = request.query(name, value);
             }
-            let mut response = request
-                .call()
-                .map_err(|_| "Could not reach Todoist (connection or timeout)".to_string())?;
-            match response.status().as_u16() {
+            let started = Instant::now();
+            let mut response = request.call().map_err(|error| {
+                warn!(path, %error, "Todoist request failed");
+                "Could not reach Todoist (connection or timeout)".to_string()
+            })?;
+            let status = response.status().as_u16();
+            debug!(
+                path,
+                status,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Todoist responded"
+            );
+            match status {
                 200..=299 => {}
                 400 => return Err("Todoist did not understand the filter".into()),
                 401 | 403 => return Err("Todoist rejected the API token".into()),

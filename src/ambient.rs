@@ -266,6 +266,7 @@ mod lookup {
 
     use chrono::Local;
     use serde::Deserialize;
+    use tracing::{debug, info, warn};
 
     use super::{Moment, Weather, forecast_url, parse_forecast};
 
@@ -389,16 +390,29 @@ mod lookup {
             .max_redirects(0)
             .build()
             .into();
-        let mut response = agent
-            .get(url)
-            .call()
-            .map_err(|_| "Could not reach the weather service".to_string())?;
+        let mut response = agent.get(url).call().map_err(|error| {
+            warn!(url, %error, "weather request failed");
+            "Could not reach the weather service".to_string()
+        })?;
         response
             .body_mut()
             .with_config()
             .limit(64 * 1024)
             .read_to_string()
             .map_err(|_| "Could not read the weather response".to_string())
+    }
+
+    /// The moment for now, and why it is being made, for the log.
+    fn moment(weather: Option<&Weather>, reason: &str) -> Moment {
+        let moment = Moment::new(Local::now().naive_local(), weather);
+        info!(
+            reason,
+            weather = ?weather.map(|weather| (weather.temperature_c, weather.code, weather.wind_kmh)),
+            full = moment.full,
+            brief = moment.brief,
+            "moment described"
+        );
+        moment
     }
 
     /// Finds the weather on a worker thread and refreshes the moment every
@@ -416,6 +430,7 @@ mod lookup {
     impl Ambient {
         pub fn start(place: Option<Place>) -> Self {
             let started = Instant::now();
+            info!(?place, "ambient started");
             let receive = place
                 .as_ref()
                 .and_then(|place| Self::request(place.clone(), None));
@@ -437,13 +452,30 @@ mod lookup {
             std::thread::Builder::new()
                 .name("ambient-weather".into())
                 .spawn(move || {
+                    let fetch_started = Instant::now();
                     let result = match coordinates {
                         Some(coordinates) => forecast_with_coordinates(coordinates, &http_get)
                             .map(|weather| (weather, coordinates)),
                         None => weather_with_coordinates(&place, &http_get),
                     };
+                    let elapsed_ms = fetch_started.elapsed().as_millis() as u64;
+                    match &result {
+                        Ok((weather, located)) => {
+                            debug!(coordinates = ?located, "weather located");
+                            info!(
+                                ?place,
+                                reused_coordinates = coordinates.is_some(),
+                                code = weather.code,
+                                temperature_c = weather.temperature_c,
+                                elapsed_ms,
+                                "weather fetched"
+                            );
+                        }
+                        Err(error) => warn!(?place, %error, elapsed_ms, "weather fetch failed"),
+                    }
                     let _ = send.send(result);
                 })
+                .inspect_err(|error| warn!(%error, "weather worker could not start"))
                 .ok()?;
             Some(receive)
         }
@@ -463,27 +495,27 @@ mod lookup {
                         self.receive = None;
                         self.initial_pending = false;
                         self.next_refresh = self.started + REFRESH;
-                        return Some(Moment::new(Local::now().naive_local(), Some(&weather)));
+                        return Some(moment(Some(&weather), "weather"));
                     }
                     Ok(Err(_)) => {
                         self.receive = None;
                         self.initial_pending = false;
                         self.next_refresh = self.started + REFRESH;
-                        return Some(Moment::new(Local::now().naive_local(), None));
+                        return Some(moment(None, "weather failed"));
                     }
                     Err(TryRecvError::Empty) if self.started.elapsed() < WAIT => return None,
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
                         self.receive = None;
                         self.initial_pending = false;
                         self.next_refresh = self.started + REFRESH;
-                        return Some(Moment::new(Local::now().naive_local(), None));
+                        return Some(moment(None, "weather timed out"));
                     }
                 }
             }
 
             if self.initial_pending {
                 self.initial_pending = false;
-                return Some(Moment::new(Local::now().naive_local(), None));
+                return Some(moment(None, "no place named"));
             }
 
             if Instant::now() >= self.next_refresh {
@@ -495,7 +527,7 @@ mod lookup {
                         return None;
                     }
                 }
-                return Some(Moment::new(Local::now().naive_local(), None));
+                return Some(moment(None, "refresh without weather"));
             }
 
             None

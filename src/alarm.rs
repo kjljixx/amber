@@ -16,6 +16,8 @@ use std::{
     time::Duration,
 };
 
+use tracing::{debug, info, warn};
+
 const SAMPLE_RATE: u32 = 44_100;
 /// Fraction of full scale the loudest sample reaches.
 const PEAK: f32 = 0.95;
@@ -222,10 +224,20 @@ pub fn play(chime: Chime) -> JoinHandle<Played> {
         if std::fs::write(&path, synthesize(chime)).is_ok() {
             for candidate in players(std::env::consts::OS, &path) {
                 if run(&candidate) {
+                    info!(chime = chime.name(), player = candidate.0, "chime played");
                     return Played::Player(candidate.0);
                 }
+                debug!(
+                    chime = chime.name(),
+                    player = candidate.0,
+                    "chime player failed"
+                );
             }
         }
+        warn!(
+            chime = chime.name(),
+            "no audio player worked, so the terminal bell rang"
+        );
         // A single byte, so it cannot split the escape sequences the screen
         // is drawn with.
         let mut out = std::io::stdout();
@@ -239,7 +251,16 @@ pub fn play(chime: Chime) -> JoinHandle<Played> {
 /// for the timer, so most callers can ignore it.
 pub fn notify(title: &str, body: &str) -> JoinHandle<bool> {
     let command = notifier(std::env::consts::OS, title, body);
-    thread::spawn(move || run(&command))
+    let (title, body) = (title.to_owned(), body.to_owned());
+    thread::spawn(move || {
+        let shown = run(&command);
+        if shown {
+            info!(title, body, "notification shown");
+        } else {
+            warn!(title, body, notifier = command.0, "notification failed");
+        }
+        shown
+    })
 }
 
 /// Handle for the cross-platform dimming overlay child process.

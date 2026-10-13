@@ -6,6 +6,7 @@
 use std::{collections::BTreeMap, path::Path};
 
 use serde_json::{Value, json};
+use tracing::{debug, info};
 
 use crate::generation::{Answer, random_below};
 
@@ -47,6 +48,7 @@ pub fn load_pool(path: &Path) -> Result<Vec<String>, String> {
     if pool.is_empty() {
         return Err(format!("{} has no phrases", path.display()));
     }
+    info!(path = %path.display(), phrases = pool.len(), "phrase pool loaded");
     Ok(pool)
 }
 
@@ -59,10 +61,12 @@ pub fn sample(pool: &[String], count: usize) -> Result<Vec<String>, String> {
         let pick = taken + random_below(remaining)? as usize;
         indices.swap(taken, pick);
     }
-    Ok(indices[..count]
+    let sampled: Vec<String> = indices[..count]
         .iter()
         .map(|&index| pool[index].clone())
-        .collect())
+        .collect();
+    debug!(pool = pool.len(), count, candidates = ?sampled, "phrases sampled");
+    Ok(sampled)
 }
 
 fn criterion(index: usize) -> String {
@@ -111,11 +115,20 @@ pub(crate) fn best_phrase(
         .enumerate()
         .filter_map(|(index, text)| Some((text, *probabilities.get(&criterion(index))?)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(text, probability)| Phrase {
-            text: text.clone(),
-            probability,
-            candidates: candidates.len(),
-            cost_usd,
+        .map(|(text, probability)| {
+            info!(
+                lyric = text.as_str(),
+                probability,
+                candidates = candidates.len(),
+                cost_usd,
+                "lyric chosen"
+            );
+            Phrase {
+                text: text.clone(),
+                probability,
+                candidates: candidates.len(),
+                cost_usd,
+            }
         })
         .ok_or_else(|| "Jev returned no usable lyric".into())
 }

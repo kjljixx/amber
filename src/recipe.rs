@@ -1,3 +1,5 @@
+use tracing::info;
+
 use crate::{
     gradient::{Gradient, Point, PreparedGradient},
     warp::{Clock, LayerMotion, Warp, WarpLayer, WarpStack},
@@ -69,6 +71,7 @@ impl Recipe {
                 format!("invalid recipe '{}': {message}", path.display()),
             )
         })?;
+        info!(path = %path.display(), points = recipe.points.len(), "recipe loaded");
         Ok(recipe)
     }
 

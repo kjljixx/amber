@@ -5,6 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     widgets::Paragraph,
 };
+use tracing::info;
 
 mod cli;
 mod speed_control;
@@ -52,6 +53,23 @@ fn run() -> io::Result<()> {
         println!("{}", cli::USAGE);
         return Ok(());
     };
+    let log_directory = amber::log::init()?;
+    info!(
+        recipe = ?recipe,
+        scene = ?scene,
+        logs = %log_directory.display(),
+        "amber starting"
+    );
+    let result = view_recipes(recipe, scene);
+    match &result {
+        Ok(()) => info!("amber finished"),
+        Err(error) => tracing::warn!(%error, "amber failed"),
+    }
+    println!("Logs: {}", log_directory.display());
+    result
+}
+
+fn view_recipes(recipe: Option<std::path::PathBuf>, scene: Option<String>) -> io::Result<()> {
     let mut presets = Vec::from(presets::presets());
     let mut mode = 0;
     if let Some(path) = recipe {
@@ -60,6 +78,7 @@ fn run() -> io::Result<()> {
             recipe: Recipe::load(&path)?,
         });
         mode = presets.len() - 1;
+        info!(path = %path.display(), "loaded recipe");
     }
     if let Some(name) = scene {
         presets.push(presets::Preset {
@@ -67,6 +86,7 @@ fn run() -> io::Result<()> {
             recipe: load_scene(&name)?,
         });
         mode = presets.len() - 1;
+        info!(%name, "loaded scene");
     }
     let mut view =
         GradientView::new(&presets[mode].recipe, Instant::now()).map_err(io::Error::other)?;

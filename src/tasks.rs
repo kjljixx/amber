@@ -12,6 +12,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "generation")]
 pub mod todoist;
@@ -246,18 +247,33 @@ impl Loader {
             .fetched
             .is_some_and(|at| at.elapsed() < self.source.fresh_for());
         if self.pending.is_some() || recent {
+            debug!(
+                pending = self.pending.is_some(),
+                recent, "tasks refresh skipped"
+            );
             return;
         }
         let (send, receive) = mpsc::channel();
         let source = self.source.clone();
+        info!(source = ?self.source, "tasks fetch started");
         let spawned = std::thread::Builder::new()
             .name("tasks".into())
             .spawn(move || {
-                let _ = send.send(source.fetch());
+                let started = Instant::now();
+                let result = source.fetch();
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                match &result {
+                    Ok(tasks) => info!(count = tasks.len(), elapsed_ms, "tasks fetched"),
+                    Err(error) => warn!(%error, elapsed_ms, "tasks fetch failed"),
+                }
+                let _ = send.send(result);
             });
         match spawned {
             Ok(_) => self.pending = Some(receive),
-            Err(_) => self.error = Some("Could not start loading tasks".into()),
+            Err(error) => {
+                warn!(%error, "tasks worker could not start");
+                self.error = Some("Could not start loading tasks".into());
+            }
         }
     }
 

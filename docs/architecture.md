@@ -91,3 +91,10 @@ Every 20 seconds in a work phase: screenshot → Luna Decisions → `Event::OffT
 | `focus-check` | `focus`, `focus_overlay` (`xcap`, `image`, `base64`, `eframe`) |
 
 `ambient` and `tasks` always compile; only their network lookups use `generation`.
+
+## Logging
+
+`amber::log` routes `tracing` events to five files by module path:
+`gradient.log`, `tasks.log`, `audio.log`, `focus.log`, and `timer.log`, in
+`logs/run-<timestamp>-<pid>/`. Each binary calls `log::init()` once. See
+`docs/generation.md` for the file contents and `RUST_LOG`.

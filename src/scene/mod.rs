@@ -13,6 +13,7 @@ mod elements;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 pub use color::ColorSpec;
 #[cfg(feature = "generation")]
@@ -225,6 +226,7 @@ impl Scene {
                 format!("invalid scene '{}': {message}", path.display()),
             )
         })?;
+        info!(path = %path.display(), "scene loaded");
         Ok(scene)
     }
 
@@ -267,7 +269,8 @@ impl Scene {
 
     /// Builds the recipe. Deterministic for a given scene.
     pub fn compile(&self) -> Result<Recipe, String> {
-        self.validate()?;
+        self.validate()
+            .inspect_err(|message| warn!(%message, "scene is not valid"))?;
         let style = &self.style;
         let tone = Tone::new(style.lightness, style.saturation, style.contrast);
         let haze = self.haze.as_ref().map(|haze| {
@@ -302,6 +305,12 @@ impl Scene {
             warp: self.warp.clone(),
         };
         recipe.compile().map_err(str::to_string)?;
+        debug!(
+            elements = self.elements.len(),
+            roles = self.palette.len(),
+            points = recipe.points.len(),
+            "scene compiled"
+        );
         Ok(recipe)
     }
 }

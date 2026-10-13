@@ -355,12 +355,65 @@ pub use capture::{Capture, list_devices};
 mod capture {
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{Device, Error, ErrorKind, FromSample, Sample, SampleFormat};
+    use tracing::{debug, info, warn};
 
     use super::{Analyzer, Source, Status};
     use crate::Excitement;
+
+    /// How often what was heard is summed up in the log.
+    const SUMMARY_EVERY: Duration = Duration::from_secs(10);
+
+    /// What the polls since the last log line saw.
+    struct Summary {
+        since: Instant,
+        polls: u32,
+        level_sum: f32,
+        level_max: f32,
+        activity_sum: f32,
+        beats: u32,
+    }
+
+    impl Summary {
+        fn new() -> Self {
+            Self {
+                since: Instant::now(),
+                polls: 0,
+                level_sum: 0.0,
+                level_max: 0.0,
+                activity_sum: 0.0,
+                beats: 0,
+            }
+        }
+
+        fn add(&mut self, excitement: &Excitement) {
+            self.polls += 1;
+            self.level_sum += excitement.level;
+            self.level_max = self.level_max.max(excitement.level);
+            self.activity_sum += excitement.activity;
+            self.beats += u32::from(excitement.pulse >= 0.99);
+        }
+
+        /// Log the summary and start a new one, once it covers long enough.
+        fn log_when_due(&mut self) {
+            if self.since.elapsed() < SUMMARY_EVERY || self.polls == 0 {
+                return;
+            }
+            let polls = self.polls as f32;
+            info!(
+                seconds = self.since.elapsed().as_secs(),
+                level_mean = self.level_sum / polls,
+                level_max = self.level_max,
+                activity_mean = self.activity_sum / polls,
+                beats = self.beats,
+                "audio heard"
+            );
+            *self = Self::new();
+        }
+    }
 
     #[derive(Default)]
     struct Shared {
@@ -374,23 +427,28 @@ mod capture {
         shared: Arc<Shared>,
         opened: mpsc::Receiver<Result<String, String>>,
         status: Status,
+        summary: Summary,
+        started: Instant,
         _stop: mpsc::Sender<()>,
     }
 
     impl Capture {
         pub fn start(source: Source, sensitivity: f32) -> Self {
+            info!(?source, sensitivity, "audio capture starting");
             let shared = Arc::new(Shared::default());
             let (opened_tx, opened) = mpsc::channel();
             let (stop, stopped) = mpsc::channel::<()>();
             let worker = Arc::clone(&shared);
             thread::spawn(move || match open(&source, sensitivity, &worker) {
                 Ok((stream, name)) => {
+                    info!(device = name, "audio capture opened");
                     let _ = opened_tx.send(Ok(name));
                     // Keep the stream alive until the Capture is dropped.
                     let _ = stopped.recv();
                     drop(stream);
                 }
                 Err(message) => {
+                    warn!(%message, "audio capture could not open");
                     let _ = opened_tx.send(Err(message));
                 }
             });
@@ -398,6 +456,8 @@ mod capture {
                 shared,
                 opened,
                 status: Status::Starting,
+                summary: Summary::new(),
+                started: Instant::now(),
                 _stop: stop,
             }
         }
@@ -414,6 +474,7 @@ mod capture {
             if let Status::Listening(_) = self.status
                 && let Some(problem) = self.shared.problem.lock().unwrap().take()
             {
+                warn!(%problem, "audio capture failed while listening");
                 self.status = Status::Failed(problem);
             }
             &self.status
@@ -424,10 +485,13 @@ mod capture {
             if !matches!(self.status(), Status::Listening(_)) {
                 return Excitement::default();
             }
-            match self.shared.analyzer.lock().unwrap().as_mut() {
+            let excitement = match self.shared.analyzer.lock().unwrap().as_mut() {
                 Some(analyzer) => analyzer.take(),
                 None => Excitement::default(),
-            }
+            };
+            self.summary.add(&excitement);
+            self.summary.log_when_due();
+            excitement
         }
 
         /// False while listening has produced only silence.
@@ -438,6 +502,16 @@ mod capture {
                 .unwrap()
                 .as_ref()
                 .is_some_and(Analyzer::heard)
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            info!(
+                seconds = self.started.elapsed().as_secs(),
+                status = ?self.status,
+                "audio capture stopped"
+            );
         }
     }
 
@@ -510,13 +584,22 @@ mod capture {
         }
         .map_err(|error| format!("{name}: {error}"))?;
         let channels = usize::from(config.channels()).max(1);
+        info!(
+            device = name,
+            sample_rate = config.sample_rate(),
+            channels,
+            format = %config.sample_format(),
+            "audio device chosen"
+        );
         *shared.analyzer.lock().unwrap() =
             Some(Analyzer::new(config.sample_rate()).with_sensitivity(sensitivity));
 
         let problems = Arc::clone(shared);
         let on_error = move |error: Error| match error.kind() {
             // The stream carries on (or is rerouted) after these.
-            ErrorKind::DeviceChanged | ErrorKind::Xrun | ErrorKind::RealtimeDenied => {}
+            ErrorKind::DeviceChanged | ErrorKind::Xrun | ErrorKind::RealtimeDenied => {
+                debug!(kind = ?error.kind(), "audio stream event ignored");
+            }
             _ => *problems.problem.lock().unwrap() = Some(error.to_string()),
         };
         let stream_config = config.into();

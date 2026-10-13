@@ -3,11 +3,9 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, TryRecvError},
     },
@@ -15,10 +13,10 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{SecondsFormat, Utc};
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde::Deserialize;
 use serde_json::json;
+use tracing::{Level, debug, enabled, info, warn};
 
 const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 const DEFAULT_MODEL: &str = "openai/gpt-6-luna-decisions";
@@ -29,59 +27,6 @@ const OFF_TASK_THRESHOLD: f64 = 0.5;
 
 pub const OFF_TASK_TITLE: &str = "Let's get back on track";
 pub const OFF_TASK_BODY: &str = "Don't get distracted. Stay focused on your task";
-
-#[derive(Clone)]
-pub struct DebugLog {
-    inner: Arc<Mutex<DebugLogInner>>,
-}
-
-struct DebugLogInner {
-    directory: PathBuf,
-    events: File,
-}
-
-impl DebugLog {
-    fn create(base: &Path) -> std::io::Result<Self> {
-        fs::create_dir_all(base)?;
-        let run_name = format!(
-            "run-{}-{}",
-            Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
-            std::process::id()
-        );
-        let directory = base.join(run_name);
-        fs::create_dir(&directory)?;
-        let events = OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(directory.join("events.log"))?;
-        let logger = Self {
-            inner: Arc::new(Mutex::new(DebugLogInner { directory, events })),
-        };
-        logger.log("debug_session_started");
-        Ok(logger)
-    }
-
-    pub fn directory(&self) -> Option<PathBuf> {
-        self.inner.lock().ok().map(|inner| inner.directory.clone())
-    }
-
-    pub fn log(&self, event: impl AsRef<str>) {
-        if let Ok(mut inner) = self.inner.lock() {
-            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let _ = writeln!(inner.events, "{timestamp} {}", event.as_ref());
-            let _ = inner.events.flush();
-        }
-    }
-
-    fn save(&self, name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
-        let directory = self
-            .directory()
-            .ok_or_else(|| std::io::Error::other("debug log lock is unavailable"))?;
-        let path = directory.join(name);
-        fs::write(&path, contents)?;
-        Ok(path)
-    }
-}
 
 #[derive(Debug)]
 pub enum Event {
@@ -117,34 +62,19 @@ pub struct FocusChecker {
     interval: Duration,
     monitor_active: bool,
     next_check_id: u64,
-    debug: Option<DebugLog>,
 }
 
 impl FocusChecker {
-    pub fn from_env(path: &Path, debug_enabled: bool) -> Result<Self, String> {
+    pub fn from_env(path: &Path) -> Result<Self, String> {
         let client = Client::from_env(path)?;
-        let debug = if debug_enabled {
-            Some(
-                DebugLog::create(Path::new("focus-debug"))
-                    .map_err(|error| format!("Could not create focus-debug log: {error}"))?,
-            )
-        } else {
-            None
-        };
-        if let Some(debug) = &debug {
-            if let Some(directory) = debug.directory() {
-                debug.log(format!("log_directory={directory:?}"));
-            }
-            debug.log(format!(
-                "config model={:?} initial_delay_secs={} normal_interval_secs={} off_task_interval_secs={} threshold={}",
-                client.model,
-                INITIAL_DELAY.as_secs(),
-                INTERVAL.as_secs(),
-                OVERLAY_INTERVAL.as_secs(),
-                OFF_TASK_THRESHOLD
-            ));
-            debug.log("state task=None monitor_active=true streak=0");
-        }
+        info!(
+            model = client.model,
+            initial_delay_secs = INITIAL_DELAY.as_secs(),
+            normal_interval_secs = INTERVAL.as_secs(),
+            off_task_interval_secs = OVERLAY_INTERVAL.as_secs(),
+            threshold = OFF_TASK_THRESHOLD,
+            "focus checker configured"
+        );
         Ok(Self {
             client,
             task: None,
@@ -154,12 +84,7 @@ impl FocusChecker {
             interval: INTERVAL,
             monitor_active: true,
             next_check_id: 1,
-            debug,
         })
-    }
-
-    pub fn debug_log(&self) -> Option<DebugLog> {
-        self.debug.clone()
     }
 
     /// Begin a fresh sequence when the selected task changes. The first image
@@ -172,9 +97,7 @@ impl FocusChecker {
             return;
         }
         self.discard_pending("task_changed");
-        if let Some(debug) = &self.debug {
-            debug.log(format!("task_selected task={task:?}"));
-        }
+        info!(task = ?task, "task selected");
         self.task = task;
         self.interval = INTERVAL;
         self.next_check =
@@ -195,9 +118,7 @@ impl FocusChecker {
         } else {
             "break_started"
         });
-        if let Some(debug) = &self.debug {
-            debug.log(format!("monitor_active={active}"));
-        }
+        info!(active, "monitoring changed");
         self.off_task_count = 0;
         self.interval = INTERVAL;
         self.next_check = (active && self.task.is_some()).then_some(now + INITIAL_DELAY);
@@ -229,13 +150,13 @@ impl FocusChecker {
                     if self.task.as_deref() == Some(task.as_str()) {
                         match result {
                             Ok(decision) => {
-                                if let Some(debug) = &self.debug {
-                                    debug.log(format!(
-                                        "model_decision check_id={check_id} task={task:?} probability_off_task={:.6} off_task={}",
-                                        decision.probability,
-                                        decision.off_task
-                                    ));
-                                }
+                                info!(
+                                    check_id,
+                                    task = %task,
+                                    probability_off_task = decision.probability,
+                                    off_task = decision.off_task,
+                                    "decision received"
+                                );
                                 if decision.off_task {
                                     self.off_task_count = self.off_task_count.saturating_add(1);
                                     self.interval = OVERLAY_INTERVAL;
@@ -253,11 +174,7 @@ impl FocusChecker {
                                 }
                             }
                             Err(message) => {
-                                if let Some(debug) = &self.debug {
-                                    debug.log(format!(
-                                        "check_error check_id={check_id} task={task:?} error={message:?}"
-                                    ));
-                                }
+                                warn!(check_id, task = %task, error = %message, "check failed");
                                 self.log_state("check_error");
                                 return Some(Event::Error(message));
                             }
@@ -267,11 +184,7 @@ impl FocusChecker {
                 Err(TryRecvError::Disconnected) => {
                     self.pending = None;
                     if self.task.as_deref() == Some(task.as_str()) {
-                        if let Some(debug) = &self.debug {
-                            debug.log(format!(
-                                "check_error check_id={check_id} task={task:?} error=worker_disconnected"
-                            ));
-                        }
+                        warn!(check_id, task = %task, "check worker disconnected");
                         self.log_state("worker_disconnected");
                         return Some(Event::Error("Focus check stopped unexpectedly".into()));
                     }
@@ -293,15 +206,13 @@ impl FocusChecker {
             let worker_cancelled = Arc::clone(&cancelled);
             self.next_check = Some(now + self.interval);
             self.pending = Some((check_id, task.clone(), receive, cancelled));
-            let debug = self.debug.clone();
-            if let Some(debug) = &debug {
-                debug.log(format!(
-                    "check_started check_id={check_id} task={task:?} monitor_active={} streak={} interval_secs={}",
-                    self.monitor_active,
-                    self.off_task_count,
-                    self.interval.as_secs()
-                ));
-            }
+            info!(
+                check_id,
+                task = %task,
+                streak = self.off_task_count,
+                interval_secs = self.interval.as_secs(),
+                "check started"
+            );
             let spawn = std::thread::Builder::new()
                 .name("focus-check".into())
                 .spawn(move || {
@@ -309,41 +220,28 @@ impl FocusChecker {
                         return;
                     }
                     let capture_started = Instant::now();
-                    if let Some(debug) = &debug {
-                        debug.log(format!("capture_started check_id={check_id}"));
-                    }
                     let result = match capture_jpeg() {
                         Ok(image) => {
-                            if let Some(debug) = &debug {
-                                match debug.save(&format!("check-{check_id:04}.jpg"), &image) {
-                                    Ok(path) => debug.log(format!(
-                                        "capture_saved check_id={check_id} path={:?} bytes={} elapsed_ms={}",
-                                        path,
-                                        image.len(),
-                                        capture_started.elapsed().as_millis()
-                                    )),
-                                    Err(error) => debug.log(format!(
-                                        "capture_save_error check_id={check_id} error={error:?}"
-                                    )),
-                                }
-                            }
+                            info!(
+                                check_id,
+                                bytes = image.len(),
+                                elapsed_ms = capture_started.elapsed().as_millis() as u64,
+                                "screenshot captured"
+                            );
+                            keep(check_id, &format!("check-{check_id:04}.jpg"), &image);
                             if worker_cancelled.load(Ordering::Relaxed) {
-                                if let Some(debug) = &debug {
-                                    debug.log(format!(
-                                        "check_cancelled check_id={check_id} before_model_request"
-                                    ));
-                                }
+                                info!(check_id, "check cancelled before the model request");
                                 return;
                             }
-                            client.is_off_task(&task, &image, check_id, debug.as_ref())
+                            client.is_off_task(&task, &image, check_id)
                         }
                         Err(message) => {
-                            if let Some(debug) = &debug {
-                                debug.log(format!(
-                                    "capture_error check_id={check_id} error={message:?} elapsed_ms={}",
-                                    capture_started.elapsed().as_millis()
-                                ));
-                            }
+                            warn!(
+                                check_id,
+                                error = %message,
+                                elapsed_ms = capture_started.elapsed().as_millis() as u64,
+                                "screenshot failed"
+                            );
                             Err(message)
                         }
                     };
@@ -353,11 +251,7 @@ impl FocusChecker {
                 });
             if let Err(error) = spawn {
                 self.pending = None;
-                if let Some(debug) = &self.debug {
-                    debug.log(format!(
-                        "check_spawn_error check_id={check_id} error={error:?}"
-                    ));
-                }
+                warn!(check_id, %error, "check worker could not start");
                 return Some(Event::Error("Could not start focus check".into()));
             }
         }
@@ -367,25 +261,20 @@ impl FocusChecker {
     fn discard_pending(&mut self, reason: &str) {
         if let Some((check_id, _, _, cancelled)) = self.pending.take() {
             cancelled.store(true, Ordering::Relaxed);
-            if let Some(debug) = &self.debug {
-                debug.log(format!(
-                    "check_cancelled check_id={check_id} reason={reason}"
-                ));
-            }
+            info!(check_id, reason, "check cancelled");
         }
     }
 
     fn log_state(&self, reason: &str) {
-        if let Some(debug) = &self.debug {
-            debug.log(format!(
-                "focus_state reason={reason} task={:?} monitor_active={} streak={} interval_secs={} next_check_id={}",
-                self.task,
-                self.monitor_active,
-                self.off_task_count,
-                self.interval.as_secs(),
-                self.next_check_id
-            ));
-        }
+        debug!(
+            reason,
+            task = ?self.task,
+            monitor_active = self.monitor_active,
+            streak = self.off_task_count,
+            interval_secs = self.interval.as_secs(),
+            next_check_id = self.next_check_id,
+            "focus state"
+        );
     }
 }
 
@@ -431,13 +320,7 @@ impl Client {
         })
     }
 
-    fn is_off_task(
-        &self,
-        task: &str,
-        jpeg: &[u8],
-        check_id: u64,
-        debug: Option<&DebugLog>,
-    ) -> Result<Decision, String> {
+    fn is_off_task(&self, task: &str, jpeg: &[u8], check_id: u64) -> Result<Decision, String> {
         let data_url = format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg));
         let prompt = format!(
             "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If Amber's reminder overlay is visible, ignore its text and judge the underlying activity. If the screenshot is ambiguous, judge it on task."
@@ -460,12 +343,8 @@ impl Client {
             }
         });
         let model_started = Instant::now();
-        if let Some(debug) = debug {
-            debug.log(format!(
-                "model_request_started check_id={check_id} model={:?} task={task:?} prompt={prompt:?} screenshot=check-{check_id:04}.jpg",
-                self.model
-            ));
-        }
+        info!(check_id, model = self.model, "model request started");
+        debug!(check_id, prompt = %prompt, "model prompt");
         let response = self
             .agent
             .post(ENDPOINT)
@@ -476,12 +355,11 @@ impl Client {
         let mut response = match response {
             Ok(response) => response,
             Err(_) => {
-                if let Some(debug) = debug {
-                    debug.log(format!(
-                        "model_request_error check_id={check_id} error=connection_or_timeout elapsed_ms={}",
-                        model_started.elapsed().as_millis()
-                    ));
-                }
+                warn!(
+                    check_id,
+                    elapsed_ms = model_started.elapsed().as_millis() as u64,
+                    "model request failed: connection or timeout"
+                );
                 return Err("Could not reach OpenRouter (connection or timeout)".into());
             }
         };
@@ -494,27 +372,27 @@ impl Client {
         {
             Ok(raw) => raw,
             Err(_) => {
-                if let Some(debug) = debug {
-                    debug.log(format!(
-                        "model_response_read_error check_id={check_id} status={status} elapsed_ms={}",
-                        model_started.elapsed().as_millis()
-                    ));
-                }
+                warn!(
+                    check_id,
+                    status,
+                    elapsed_ms = model_started.elapsed().as_millis() as u64,
+                    "model response could not be read"
+                );
                 return Err("OpenRouter returned an invalid focus decision".into());
             }
         };
-        if let Some(debug) = debug {
-            match debug.save(&format!("check-{check_id:04}-response.json"), raw.as_bytes()) {
-                Ok(path) => debug.log(format!(
-                    "model_response check_id={check_id} status={status} path={path:?} elapsed_ms={} raw={raw:?}",
-                    model_started.elapsed().as_millis()
-                )),
-                Err(error) => debug.log(format!(
-                    "model_response check_id={check_id} status={status} save_error={error:?} elapsed_ms={} raw={raw:?}",
-                    model_started.elapsed().as_millis()
-                )),
-            }
-        }
+        info!(
+            check_id,
+            status,
+            bytes = raw.len(),
+            elapsed_ms = model_started.elapsed().as_millis() as u64,
+            "model response received"
+        );
+        keep(
+            check_id,
+            &format!("check-{check_id:04}-response.json"),
+            raw.as_bytes(),
+        );
         match status {
             200..=299 => {}
             401 | 403 => return Err("OpenRouter rejected the API key or model access".into()),
@@ -532,11 +410,13 @@ impl Client {
             .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
             .ok_or_else(|| "OpenRouter omitted the off-task probability".to_string())?;
         let off_task = probability >= OFF_TASK_THRESHOLD;
-        if let Some(debug) = debug {
-            debug.log(format!(
-                "model_output check_id={check_id} probability_off_task={probability:.6} threshold={OFF_TASK_THRESHOLD} off_task={off_task}"
-            ));
-        }
+        debug!(
+            check_id,
+            probability_off_task = probability,
+            threshold = OFF_TASK_THRESHOLD,
+            off_task,
+            "model output parsed"
+        );
         Ok(Decision {
             probability,
             off_task,
@@ -554,6 +434,19 @@ struct Answer {
     #[serde(rename = "type")]
     answer_type: String,
     noul: f64,
+}
+
+/// At `debug`, keep a screenshot or model response next to the logs.
+fn keep(check_id: u64, name: &str, contents: &[u8]) {
+    if !enabled!(Level::DEBUG) {
+        return;
+    }
+    match crate::log::attach("focus", name, contents) {
+        Ok(path) => {
+            debug!(check_id, path = %path.display(), bytes = contents.len(), "attachment saved")
+        }
+        Err(error) => warn!(check_id, %error, "attachment not saved"),
+    }
 }
 
 fn capture_jpeg() -> Result<Vec<u8>, String> {

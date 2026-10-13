@@ -9,6 +9,7 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tracing::{debug, info, warn};
 
 use crate::{
     Recipe,
@@ -84,6 +85,7 @@ impl JevClient {
             .max_redirects(0)
             .build()
             .into();
+        debug!(model, "Jev client configured");
         Ok(Self {
             key: key.trim().into(),
             model,
@@ -152,6 +154,7 @@ impl JevClient {
         let envelope = self.post_decision(&request, endpoint)?;
         let design = parse_design(&envelope.answers)?;
         let recipe = design.to_recipe(prompt)?;
+        info!(prompt, ?design, cost_usd = cost(&envelope), "design chosen");
         Ok(GeneratedGradient {
             recipe,
             radians_per_second: f64::from(0.2 + 0.9 * design.energy / 4.0) * 0.3,
@@ -162,14 +165,30 @@ impl JevClient {
     }
 
     fn post_decision(&self, request: &Value, endpoint: &str) -> Result<Envelope, String> {
+        let started = Instant::now();
+        info!(model = self.model, "Jev request started");
+        debug!(%request, "Jev request body");
         let mut response = self
             .agent
             .post(endpoint)
             .header("Authorization", format!("Bearer {}", self.key))
             .header("X-Title", "Amber Gradients")
             .send_json(request)
-            .map_err(|_| "Could not reach OpenRouter (connection or timeout)".to_string())?;
-        match response.status().as_u16() {
+            .map_err(|error| {
+                warn!(
+                    %error,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "Jev request failed"
+                );
+                "Could not reach OpenRouter (connection or timeout)".to_string()
+            })?;
+        let status = response.status().as_u16();
+        info!(
+            status,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Jev responded"
+        );
+        match status {
             200..=299 => {}
             401 | 403 => return Err("OpenRouter rejected the API key or model access".into()),
             402 => return Err("OpenRouter account needs credits".into()),
@@ -181,7 +200,10 @@ impl JevClient {
             .with_config()
             .limit(256 * 1024)
             .read_json()
-            .map_err(|_| "OpenRouter returned an invalid decision response".to_string())
+            .map_err(|error| {
+                warn!(%error, "Jev response could not be read");
+                "OpenRouter returned an invalid decision response".to_string()
+            })
     }
 }
 
@@ -259,9 +281,14 @@ impl Generator {
                     return None;
                 }
             }
+            info!(
+                prompt = self.submitted,
+                "cached design reused with a fresh warp"
+            );
             self.status = "Loaded cached design with a fresh warp".into();
             return Some(cached);
         }
+        info!(prompt = self.submitted, "gradient requested");
         self.start(
             "Jev is choosing colors, layout, and movement…",
             move |client| client.generate(&prompt),
@@ -285,6 +312,7 @@ impl Generator {
             return;
         }
         self.submitted = moment.clone();
+        info!(moment, "gradient requested for the moment");
         self.start("Jev is choosing a lyric for the moment…", move |client| {
             client.generate_for_moment(&moment, Path::new(phrases::POOL_PATH))
         });
@@ -305,7 +333,10 @@ impl Generator {
                 let _ = send.send(result);
             }) {
             Ok(_) => self.pending = Some((Instant::now(), receive)),
-            Err(_) => self.status = "Could not start generation worker".into(),
+            Err(error) => {
+                warn!(%error, "generation worker could not start");
+                self.status = "Could not start generation worker".into();
+            }
         }
     }
 
@@ -322,6 +353,13 @@ impl Generator {
         };
         match &result {
             Ok(gradient) => {
+                info!(
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    cost_usd = gradient.cost_usd,
+                    lyric = gradient.phrase.as_ref().map(|phrase| phrase.text.as_str()),
+                    radians_per_second = gradient.radians_per_second,
+                    "gradient generated"
+                );
                 let lyric = gradient.phrase.as_ref().map_or_else(String::new, |phrase| {
                     format!(
                         "“{}” ({:.1}% of {}) · ",
@@ -347,7 +385,14 @@ impl Generator {
                         .insert(self.submitted.to_lowercase(), gradient.clone());
                 }
             }
-            Err(message) => self.status = format!("{message} · Enter to retry"),
+            Err(message) => {
+                warn!(
+                    %message,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "gradient generation failed"
+                );
+                self.status = format!("{message} · Enter to retry");
+            }
         }
         self.pending = None;
         Some(result)

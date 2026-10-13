@@ -19,6 +19,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Clear, Paragraph},
 };
+use tracing::{info, warn};
 use unicode_width::UnicodeWidthStr;
 
 #[path = "../speed_control.rs"]
@@ -109,6 +110,24 @@ fn run() -> io::Result<()> {
         println!("{HELP}");
         return Ok(());
     }
+    let log_directory = amber::log::init()?;
+    info!(
+        interactive = options.output.is_none(),
+        prompt_chars = options.prompt.chars().count(),
+        output = ?options.output,
+        logs = %log_directory.display(),
+        "jev starting"
+    );
+    let result = generate(options);
+    match &result {
+        Ok(()) => info!("jev finished"),
+        Err(error) => warn!(%error, "jev failed"),
+    }
+    println!("Logs: {}", log_directory.display());
+    result
+}
+
+fn generate(options: Options) -> io::Result<()> {
     if let Some(path) = options.output {
         // Reject an occupied destination before paying for a request.
         if path.exists() {
@@ -123,6 +142,7 @@ fn run() -> io::Result<()> {
             .create_new(true)
             .open(&path)?;
         serde_json::to_writer_pretty(&mut file, &gradient.recipe)?;
+        info!(path = %path.display(), "saved recipe");
         println!("Saved gradient recipe to {}", path.display());
         return Ok(());
     }
@@ -153,8 +173,15 @@ fn interactive(mut prompt: String) -> io::Result<()> {
     ratatui::run(|terminal| {
         loop {
             if let Some(result) = generator.poll() {
-                if let Ok(gradient) = result {
-                    apply(&mut view, &gradient, &mut speed)?;
+                match result {
+                    Ok(gradient) => {
+                        info!(
+                            speed = gradient.radians_per_second,
+                            "applying generated gradient"
+                        );
+                        apply(&mut view, &gradient, &mut speed)?;
+                    }
+                    Err(error) => warn!(%error, "generation failed"),
                 }
                 redraw = true;
             }

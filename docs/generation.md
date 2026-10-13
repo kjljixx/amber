@@ -102,15 +102,13 @@ cargo run --offline
 
 Pass `--no-focus-check` to disable it for a run.
 
-Pass `--focus-debug` to enable focus checks and save a local trace under
-`focus-debug/run-<timestamp>-<pid>/`. The `events.log` file records timestamps,
-the selected task and work/break state, check scheduling and capture timing,
-model request/response details and decisions, errors, off-task streak changes,
-Pomodoro phase changes, notification requests and command results, and overlay
-events. Each check's screenshot is saved as
-`check-NNNN.jpg`, and the raw model response is saved as
-`check-NNNN-response.json`. These files can contain your screen contents, task
-text, and model response; the directory is ignored by Git.
+Focus checks are logged to `logs/run-<timestamp>-<pid>/focus.log` (see
+[Logs](#logs)). At the default `info` level each check logs its schedule,
+screenshot size, model status and timing, decision, streak, notification, and
+overlay events. Run with `RUST_LOG=amber::focus=debug` to also save each
+screenshot as `focus/check-NNNN.jpg` and the raw model response as
+`focus/check-NNNN-response.json`, and to log the prompt. These files can contain
+your screen contents, task text, and model response; `logs/` is ignored by Git.
 
 GPT-6 Luna Decisions receives the screenshot and task text through OpenRouter.
 From the second consecutive off-task decision onward, each off-task check sends
@@ -229,3 +227,21 @@ dependency. This removes the optional HTTP client and generation API.
 API references:
 - [OpenRouter Jev Decisions tutorial](https://openrouter.ai/docs/guides/community/jev-tutorial)
 - [Mesh website](https://mesh.iamnoman.com)
+
+## Logs
+
+Every run of `timer`, `jev`, or `amber` writes to a new directory,
+`logs/run-<timestamp>-<pid>/`, and prints its path when it exits. Nothing is
+logged to the terminal. A file appears when its first line is written.
+
+| File | Parts |
+|---|---|
+| `gradient.log` | weather, lyric choice, Jev requests, scene, recipe, view |
+| `tasks.log` | task list, Todoist, task picker |
+| `audio.log` | audio capture and analysis |
+| `focus.log` | focus checks, decisions, overlay |
+| `timer.log` | clock phases, alarm, startup options, shutdown |
+
+The level is `info`. `RUST_LOG` adds to it, for example
+`RUST_LOG=debug` or `RUST_LOG=amber::focus=debug,amber::audio=trace`. API keys
+and tokens are never logged.

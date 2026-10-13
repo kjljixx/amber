@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use ratatui::{Frame, buffer::Buffer, layout::Rect, widgets::Widget};
+use tracing::{info, warn};
 
 use crate::{CompiledRecipe, HalfBlocks, Preview, Recipe, animation::Animation};
 
@@ -26,6 +27,47 @@ pub struct RenderStats {
     /// Time spent preparing and sampling the latest preview, excluding terminal output.
     pub sampling: Duration,
     pub rebuilds: u64,
+}
+
+/// How often the time spent drawing is summed up in the log.
+const SUMMARY_EVERY: Duration = Duration::from_secs(10);
+
+/// The rebuilds since the last log line.
+struct RenderWindow {
+    since: Instant,
+    rebuilds: u32,
+    sampling_total: Duration,
+    sampling_max: Duration,
+}
+
+impl RenderWindow {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            rebuilds: 0,
+            sampling_total: Duration::ZERO,
+            sampling_max: Duration::ZERO,
+        }
+    }
+
+    fn add(&mut self, sampling: Duration, area: Rect) {
+        self.rebuilds += 1;
+        self.sampling_total += sampling;
+        self.sampling_max = self.sampling_max.max(sampling);
+        if self.since.elapsed() >= SUMMARY_EVERY {
+            info!(
+                seconds = self.since.elapsed().as_secs(),
+                rebuilds = self.rebuilds,
+                sampling_mean_ms =
+                    self.sampling_total.as_secs_f64() * 1000.0 / f64::from(self.rebuilds),
+                sampling_max_ms = self.sampling_max.as_secs_f64() * 1000.0,
+                width = area.width,
+                height = area.height,
+                "gradient rendered"
+            );
+            *self = Self::new();
+        }
+    }
 }
 
 /// How strongly something outside the view (audio, say) is stirring it up.
@@ -107,6 +149,13 @@ pub struct GradientView {
     reactivity: Reactivity,
     dirty: bool,
     stats: RenderStats,
+    window: RenderWindow,
+}
+
+impl Drop for GradientView {
+    fn drop(&mut self) {
+        info!(rebuilds = self.stats.rebuilds, "gradient view closed");
+    }
 }
 
 impl GradientView {
@@ -125,12 +174,24 @@ impl GradientView {
             reactivity: Reactivity::default(),
             dirty: true,
             stats: RenderStats::default(),
+            window: RenderWindow::new(),
         }
     }
 
     /// Failed validation leaves the current recipe and preview intact.
     pub fn set_recipe(&mut self, recipe: &Recipe) -> Result<(), &'static str> {
-        self.set_compiled(recipe.compile()?);
+        let compiled = recipe.compile().inspect_err(|message| {
+            warn!(message, "recipe rejected; the current one stays");
+        })?;
+        info!(
+            points = recipe.points.len(),
+            softness = recipe.softness,
+            distortion = recipe.distortion,
+            swirl = recipe.swirl,
+            motion = recipe.motion,
+            "recipe applied"
+        );
+        self.set_compiled(compiled);
         Ok(())
     }
 
@@ -145,6 +206,7 @@ impl GradientView {
 
     pub fn set_playback(&mut self, playback: Playback, now: Instant) {
         if playback != self.playback {
+            info!(?playback, "playback changed");
             self.playback = playback;
             self.dirty = true;
             self.sync_clock(now);
@@ -286,6 +348,7 @@ impl GradientView {
         }
         self.stats.sampling = start.elapsed();
         self.stats.rebuilds += 1;
+        self.window.add(self.stats.sampling, area);
         self.dirty = false;
     }
 }

@@ -11,6 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
 };
+use tracing::{debug, info};
 use unicode_width::UnicodeWidthStr;
 
 use super::{BLACK, fit, put_text};
@@ -48,6 +49,7 @@ pub struct Picker {
 
 impl Picker {
     pub fn new(tasks: Vec<Task>, message: Option<String>) -> Self {
+        debug!(tasks = tasks.len(), message = ?message, "picker opened");
         Self {
             tasks,
             message,
@@ -92,7 +94,15 @@ impl Picker {
     pub fn choose(&self, query: &str) -> Option<String> {
         let rows = self.rows(query);
         let last = rows.len().checked_sub(1)?;
-        Some(rows[self.selected.min(last)].choice.clone())
+        let index = self.selected.min(last);
+        let typed = !query.trim().is_empty() && index == last;
+        info!(
+            choice = %rows[index].choice,
+            typed,
+            rows = rows.len(),
+            "task chosen"
+        );
+        Some(rows[index].choice.clone())
     }
 
     /// Highlight the next row up the screen, or down with `up` false. It stops

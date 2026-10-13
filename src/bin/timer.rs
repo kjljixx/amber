@@ -83,6 +83,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Clear, Paragraph},
 };
+use tracing::{debug, info, warn};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[path = "../alarm.rs"]
@@ -100,6 +101,13 @@ use speed_control::SpeedControl;
 ))]
 #[path = "../focus_overlay.rs"]
 mod focus_overlay;
+
+/// Log target for sound the timer is waiting on, which goes to the audio log.
+#[cfg(feature = "audio")]
+const AUDIO: &str = "amber::audio";
+/// Log target for the overlay's events, which go to the focus log.
+#[cfg(feature = "focus-check")]
+const FOCUS_OVERLAY: &str = "timer::focus_overlay";
 
 const WORK: Duration = Duration::from_secs(25 * 60);
 const SHORT_BREAK: Duration = Duration::from_secs(5 * 60);
@@ -618,31 +626,9 @@ fn announcement(phase: Phase) -> (alarm::Chime, String) {
 }
 
 /// Sound and show the end of `phase`'s predecessor, without waiting for it.
-#[cfg(feature = "focus-check")]
-fn announce(phase: Phase, debug: Option<&amber::focus::DebugLog>) {
-    let (chime, message) = announcement(phase);
-    alarm::play(chime);
-    if let Some(debug) = debug {
-        debug.log(format!(
-            "pomodoro_notification_requested phase={phase:?} title={:?} body={message:?}",
-            "Pomodoro"
-        ));
-        let notification = alarm::notify("Pomodoro", &message);
-        let debug = debug.clone();
-        std::thread::spawn(move || {
-            let command_succeeded = notification.join().is_ok_and(|succeeded| succeeded);
-            debug.log(format!(
-                "notification_result kind=pomodoro command_succeeded={command_succeeded}"
-            ));
-        });
-    } else {
-        alarm::notify("Pomodoro", &message);
-    }
-}
-
-#[cfg(not(feature = "focus-check"))]
 fn announce(phase: Phase) {
     let (chime, message) = announcement(phase);
+    info!(?phase, message, "phase announced");
     alarm::play(chime);
     alarm::notify("Pomodoro", &message);
 }
@@ -746,8 +732,6 @@ struct Options {
     /// Check screenshots against the selected task, every five seconds after
     /// an off-task result and every twenty seconds otherwise.
     focus_check: bool,
-    /// Save focus screenshots, model outputs and state transitions locally.
-    focus_debug: bool,
 }
 
 impl Default for Options {
@@ -761,14 +745,13 @@ impl Default for Options {
             todoist: true,
             todoist_filter: None,
             focus_check: cfg!(feature = "focus-check"),
-            focus_debug: false,
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---no-todoist | --todoist-filter <query> | --no-focus-check | --focus-debug | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --no-focus-check | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -790,10 +773,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--alarm-test" => return Ok(Command::AlarmTest),
             "--list-audio" => return Ok(Command::ListAudio),
             "--no-focus-check" => options.focus_check = false,
-            "--focus-debug" => {
-                options.focus_debug = true;
-                options.focus_check = true;
-            }
             "--no-weather" => options.place = None,
             "--no-audio" => options.listen = false,
             "--location" => {
@@ -844,9 +823,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             return Err("--tasks and --todoist both choose where tasks come from; use one".into());
         }
         options.todoist = false;
-    }
-    if options.focus_debug {
-        options.focus_check = true;
     }
     Ok(Command::Clock(options))
 }
@@ -901,6 +877,11 @@ impl Listener {
             .map_or(Duration::ZERO, |at| now.duration_since(at));
         if !self.hinted && quiet_for > SILENCE_HINT_AFTER && !self.capture.heard() {
             self.hinted = true;
+            warn!(
+                target: AUDIO,
+                silent_secs = quiet_for.as_secs(),
+                "no sound heard since listening started"
+            );
             heard.notice = Some(if cfg!(target_os = "macos") {
                 "No sound yet. Is something playing? Terminal needs permission to record system audio".into()
             } else {
@@ -949,7 +930,14 @@ fn run() -> io::Result<()> {
         Command::ListAudio => return list_audio(),
         Command::Clock(options) => options,
     };
+    let log_directory = amber::log::init()?;
+    info!(
+        ?options,
+        log_directory = %log_directory.display(),
+        "timer started"
+    );
     let start = Instant::now();
+    let mut phases_completed = 0u32;
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
     let mut speed = SpeedControl::new(BASE_SPEED);
@@ -973,15 +961,10 @@ fn run() -> io::Result<()> {
     let mut task = TaskLine::default();
     #[cfg(feature = "focus-check")]
     let mut focus_checker = if options.focus_check {
-        Some(
-            FocusChecker::from_env(Path::new(".env"), options.focus_debug)
-                .map_err(io::Error::other)?,
-        )
+        Some(FocusChecker::from_env(Path::new(".env")).map_err(io::Error::other)?)
     } else {
         None
     };
-    #[cfg(feature = "focus-check")]
-    let focus_debug = focus_checker.as_ref().and_then(FocusChecker::debug_log);
     #[cfg(feature = "focus-check")]
     let mut focus_overlay: Option<alarm::FocusOverlay> = None;
     #[cfg(not(feature = "focus-check"))]
@@ -1019,18 +1002,12 @@ fn run() -> io::Result<()> {
     let mut text = digits(&shown)?;
     text.set_color(shown_color);
     let mut redraw = true;
-    ratatui::run(|terminal| {
+    let result = ratatui::run(|terminal| {
         loop {
             let now = Instant::now();
             if clock.advance(now) {
-                #[cfg(feature = "focus-check")]
-                {
-                    if let Some(debug) = &focus_debug {
-                        debug.log(format!("timer_phase_changed phase={:?}", clock.phase()));
-                    }
-                    announce(clock.phase(), focus_debug.as_ref());
-                }
-                #[cfg(not(feature = "focus-check"))]
+                phases_completed += 1;
+                info!(phase = ?clock.phase(), phases_completed, "phase changed");
                 announce(clock.phase());
             }
             #[cfg(feature = "focus-check")]
@@ -1038,28 +1015,23 @@ fn run() -> io::Result<()> {
                 let work_active = matches!(clock.phase(), Phase::Work(_)) && !clock.is_paused();
                 if work_active != focus_work_active {
                     focus_work_active = work_active;
-                    if let Some(debug) = &focus_debug {
-                        debug.log(format!(
-                            "focus_monitor_state active={work_active} phase={:?} timer_paused={}",
-                            clock.phase(),
-                            clock.is_paused()
-                        ));
-                    }
+                    info!(
+                        target: FOCUS_OVERLAY,
+                        work_active,
+                        phase = ?clock.phase(),
+                        paused = clock.is_paused(),
+                        "focus monitoring follows the timer"
+                    );
                     if let Some(checker) = focus_checker.as_mut() {
                         checker.set_work_active(work_active, now);
                     }
                     if !work_active {
                         if let Some(overlay) = focus_overlay.take() {
-                            if let Some(debug) = &focus_debug {
-                                debug.log(format!(
-                                    "overlay_closed reason={}",
-                                    if clock.is_paused() {
-                                        "timer_paused"
-                                    } else {
-                                        "break_started"
-                                    }
-                                ));
-                            }
+                            info!(
+                                target: FOCUS_OVERLAY,
+                                reason = if clock.is_paused() { "timer_paused" } else { "break_started" },
+                                "overlay closed"
+                            );
                             overlay.close();
                         }
                     }
@@ -1123,51 +1095,30 @@ fn run() -> io::Result<()> {
                 .as_mut()
                 .is_some_and(|overlay| !overlay.is_running())
             {
-                if let Some(debug) = &focus_debug {
-                    debug.log("overlay_closed reason=process_exited");
-                }
+                info!(target: FOCUS_OVERLAY, reason = "process_exited", "overlay closed");
                 focus_overlay = None;
             }
             #[cfg(feature = "focus-check")]
             if let Some(checker) = focus_checker.as_mut() {
                 match checker.poll(now) {
                     Some(FocusEvent::OffTask) => {
-                        if let Some(debug) = &focus_debug {
-                            debug.log(format!(
-                                "off_task_reminder notification_requested title={OFF_TASK_TITLE:?} body={OFF_TASK_BODY:?}"
-                            ));
-                        }
-                        let notification = alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
-                        if let Some(debug) = focus_debug.clone() {
-                            std::thread::spawn(move || {
-                                let command_succeeded =
-                                    notification.join().is_ok_and(|succeeded| succeeded);
-                                debug.log(format!(
-                                    "notification_result kind=off_task command_succeeded={command_succeeded}"
-                                ));
-                            });
-                        }
+                        info!(target: FOCUS_OVERLAY, "off-task reminder");
+                        alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
                         if focus_overlay.is_none() {
                             match alarm::show_focus_overlay(OFF_TASK_TITLE) {
                                 Ok(Some(overlay)) => {
-                                    if let Some(debug) = &focus_debug {
-                                        debug.log("overlay_opened");
-                                    }
+                                    info!(target: FOCUS_OVERLAY, "overlay opened");
                                     focus_overlay = Some(overlay);
                                 }
                                 Ok(None) => {
-                                    if let Some(debug) = &focus_debug {
-                                        debug.log("overlay_unavailable_on_this_platform");
-                                    }
+                                    info!(target: FOCUS_OVERLAY, "overlay unavailable on this platform");
                                 }
                                 Err(error) => {
-                                    if let Some(debug) = &focus_debug {
-                                        debug.log(format!("overlay_open_error error={error:?}"));
-                                    }
+                                    warn!(target: FOCUS_OVERLAY, %error, "overlay could not open");
                                 }
                             }
-                        } else if let Some(debug) = &focus_debug {
-                            debug.log("overlay_already_open");
+                        } else {
+                            debug!(target: FOCUS_OVERLAY, "overlay already open");
                         }
                         notice = Some(Notice {
                             text: format!("{OFF_TASK_TITLE} - {OFF_TASK_BODY}"),
@@ -1177,18 +1128,14 @@ fn run() -> io::Result<()> {
                     }
                     Some(FocusEvent::OnTask) if focus_overlay.is_some() => {
                         if let Some(overlay) = focus_overlay.take() {
-                            if let Some(debug) = &focus_debug {
-                                debug.log("overlay_closed reason=on_task");
-                            }
+                            info!(target: FOCUS_OVERLAY, reason = "on_task", "overlay closed");
                             overlay.close();
                         }
                         redraw = true;
                     }
                     Some(FocusEvent::OnTask) => {}
                     Some(FocusEvent::Error(message)) => {
-                        if let Some(debug) = &focus_debug {
-                            debug.log(format!("focus_event_error message={message:?}"));
-                        }
+                        warn!(target: FOCUS_OVERLAY, %message, "focus check reported an error");
                         notice = Some(Notice {
                             text: format!("Focus check: {message}"),
                             until: now + 2 * NOTICE,
@@ -1299,6 +1246,7 @@ fn run() -> io::Result<()> {
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
+                        info!("quit requested with Ctrl+C");
                         return Ok(());
                     }
                     if task.open {
@@ -1353,7 +1301,10 @@ fn run() -> io::Result<()> {
                         }
                     } else {
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                info!("quit requested");
+                                return Ok(());
+                            }
                             KeyCode::Char('t' | 'T') => {
                                 picker = loader.as_mut().map(|loader| {
                                     loader.refresh();
@@ -1376,6 +1327,11 @@ fn run() -> io::Result<()> {
                                         Err(message) => (format!("Audio: {message}"), None),
                                     }
                                 };
+                                info!(
+                                    listening = started.is_some(),
+                                    notice = text,
+                                    "audio toggled"
+                                );
                                 listener = started;
                                 notice = Some(Notice {
                                     text,
@@ -1385,15 +1341,24 @@ fn run() -> io::Result<()> {
                             KeyCode::Up | KeyCode::Down => {
                                 let step = if key.code == KeyCode::Up { 1 } else { -1 };
                                 speed.change(step, &mut background)?;
+                                debug!(step, "gradient speed changed");
                             }
                             KeyCode::Char(' ') => {
                                 let now = Instant::now();
                                 clock.toggle_pause(now);
+                                info!(
+                                    paused = clock.is_paused(),
+                                    phase = ?clock.phase(),
+                                    "pause toggled"
+                                );
                                 let mut playback = background.playback();
                                 playback.playing = !clock.is_paused();
                                 background.set_playback(playback, now);
                             }
-                            KeyCode::Char('r' | 'R') => clock.reset(Instant::now()),
+                            KeyCode::Char('r' | 'R') => {
+                                clock.reset(Instant::now());
+                                info!("cycle reset");
+                            }
                             _ => {}
                         }
                     }
@@ -1410,7 +1375,15 @@ fn run() -> io::Result<()> {
                 _ => {}
             }
         }
-    })
+    });
+    info!(
+        elapsed_secs = start.elapsed().as_secs(),
+        phases_completed,
+        ok = result.is_ok(),
+        "timer stopped"
+    );
+    println!("Logs: {}", log_directory.display());
+    result
 }
 
 #[cfg(test)]
