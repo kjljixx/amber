@@ -85,6 +85,7 @@ pub struct Analyzer {
     activity: f32,
     tone: Option<f32>,
     since_beat: f32,
+    hits: u64,
     heard: bool,
 }
 
@@ -126,6 +127,7 @@ impl Analyzer {
             activity: 0.0,
             tone: None,
             since_beat: MIN_BEAT_GAP_SECONDS,
+            hits: 0,
             heard: false,
         }
     }
@@ -142,6 +144,11 @@ impl Analyzer {
     /// supposed to be playing usually means the capture was not allowed.
     pub fn heard(&self) -> bool {
         self.heard
+    }
+
+    /// How many hits have been found since the start.
+    pub fn hits(&self) -> u64 {
+        self.hits
     }
 
     /// Feed mono samples in -1..1. Any chunk size works.
@@ -240,6 +247,7 @@ impl Analyzer {
             self.hit = self.hit.max(strength);
             self.density = (self.density + DENSITY_STEP * strength).min(1.0);
             self.since_beat = 0.0;
+            self.hits += 1;
         }
 
         // How much the sound is changing: how many hits there have been lately, or
@@ -389,12 +397,12 @@ mod capture {
             }
         }
 
-        fn add(&mut self, excitement: &Excitement) {
+        fn add(&mut self, excitement: &Excitement, hits: u32) {
             self.polls += 1;
             self.level_sum += excitement.level;
             self.level_max = self.level_max.max(excitement.level);
             self.activity_sum += excitement.activity;
-            self.beats += u32::from(excitement.pulse >= 0.99);
+            self.beats += hits;
         }
 
         /// Log the summary and start a new one, once it covers long enough.
@@ -428,6 +436,7 @@ mod capture {
         opened: mpsc::Receiver<Result<String, String>>,
         status: Status,
         summary: Summary,
+        hits_counted: u64,
         started: Instant,
         _stop: mpsc::Sender<()>,
     }
@@ -457,6 +466,7 @@ mod capture {
                 opened,
                 status: Status::Starting,
                 summary: Summary::new(),
+                hits_counted: 0,
                 started: Instant::now(),
                 _stop: stop,
             }
@@ -485,11 +495,13 @@ mod capture {
             if !matches!(self.status(), Status::Listening(_)) {
                 return Excitement::default();
             }
-            let excitement = match self.shared.analyzer.lock().unwrap().as_mut() {
-                Some(analyzer) => analyzer.take(),
-                None => Excitement::default(),
+            let (excitement, hits) = match self.shared.analyzer.lock().unwrap().as_mut() {
+                Some(analyzer) => (analyzer.take(), analyzer.hits()),
+                None => (Excitement::default(), self.hits_counted),
             };
-            self.summary.add(&excitement);
+            let new_hits = u32::try_from(hits - self.hits_counted).unwrap_or(u32::MAX);
+            self.hits_counted = hits;
+            self.summary.add(&excitement, new_hits);
             self.summary.log_when_due();
             excitement
         }
@@ -785,6 +797,13 @@ mod tests {
         );
         // A kick is short, so loudness rises only part way: the pulse carries it.
         assert!(readings.iter().map(|r| r.level).fold(0.0, f32::max) > 0.2);
+    }
+
+    #[test]
+    fn every_kick_counts_as_one_hit() {
+        let mut analyzer = Analyzer::new(RATE);
+        frames(&mut analyzer, &kicks(6.0, 0.5));
+        assert_eq!(analyzer.hits(), 12);
     }
 
     #[test]
