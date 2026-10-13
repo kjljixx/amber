@@ -1,9 +1,9 @@
-//! The list of tasks to choose from, shown above the box where the task is
+//! The list of tasks to choose from, shown below the box where the task is
 //! typed. What has been typed filters the list, and Enter takes the highlighted
 //! row: a task, or what was typed when it is not on the list.
 //!
-//! The nearest match sits just above the box and the rest stack upward, so
-//! moving up the list is moving up the screen.
+//! The nearest match sits just below the box and the rest stack downward, so
+//! moving down the list is moving down the screen.
 use amber::{blend_samples, tasks::Task};
 use chrono::{Local, NaiveDate};
 use ratatui::{
@@ -18,9 +18,9 @@ use super::{BLACK, fit, put_text};
 
 /// Most rows shown at once.
 const MAX_ROWS: usize = 8;
-/// How far the gradient behind a row is darkened, and the highlighted row.
-const ROW_ALPHA: f32 = 0.5;
-const HIGHLIGHT_ALPHA: f32 = 0.72;
+/// The solid background of a row, and of the highlighted row.
+const ROW_BACKGROUND: [u8; 3] = BLACK;
+const HIGHLIGHT_BACKGROUND: [u8; 3] = [48, 48, 48];
 const TEXT: Color = Color::Rgb(215, 215, 215);
 const DIM: Color = Color::Rgb(165, 165, 165);
 
@@ -39,7 +39,7 @@ pub struct Picker {
     tasks: Vec<Task>,
     /// Why there are no tasks, when there are none.
     message: Option<String>,
-    /// The highlighted row, counting up from the one nearest the box.
+    /// The highlighted row, counting down from the one nearest the box.
     selected: usize,
     /// The first row in view, counting the same way.
     offset: usize,
@@ -105,12 +105,12 @@ impl Picker {
         Some(rows[index].choice.clone())
     }
 
-    /// Highlight the next row up the screen, or down with `up` false. It stops
+    /// Highlight the next row down the screen, or up with `down` false. It stops
     /// at the ends.
-    pub fn step(&mut self, up: bool, query: &str) {
+    pub fn step(&mut self, down: bool, query: &str) {
         let last = self.rows(query).len().saturating_sub(1);
         let selected = self.selected.min(last);
-        self.selected = if up {
+        self.selected = if down {
             (selected + 1).min(last)
         } else {
             selected.saturating_sub(1)
@@ -123,9 +123,9 @@ impl Picker {
         self.offset = 0;
     }
 
-    /// Draw the rows that fit above `input`, the row where the task is typed.
+    /// Draw the rows that fit below `input`, the row where the task is typed.
     pub fn draw(&mut self, buffer: &mut Buffer, input: Rect, query: &str) {
-        let room = usize::from(input.y.saturating_sub(buffer.area.y)).min(MAX_ROWS);
+        let room = usize::from(buffer.area.bottom().saturating_sub(input.y + 1)).min(MAX_ROWS);
         let input = input.intersection(buffer.area);
         if room == 0 || input.width < 6 {
             return;
@@ -151,15 +151,15 @@ impl Picker {
         .min(rows.len().saturating_sub(room));
 
         let columns = usize::from(input.width) - 2;
-        for (above, (index, row)) in rows.iter().enumerate().skip(self.offset).enumerate() {
-            if above >= room {
+        for (below, (index, row)) in rows.iter().enumerate().skip(self.offset).enumerate() {
+            if below >= room {
                 break;
             }
-            let y = input.y - 1 - above as u16;
+            let y = input.y + 1 + below as u16;
             let on = highlighted == Some(index);
             let area = Rect::new(input.x, y, input.width, 1);
-            let alpha = if on { HIGHLIGHT_ALPHA } else { ROW_ALPHA };
-            blend_samples(buffer, area, BLACK, alpha, |_, _| true);
+            let background = if on { HIGHLIGHT_BACKGROUND } else { ROW_BACKGROUND };
+            blend_samples(buffer, area, background, 1.0, |_, _| true);
 
             let marker = if on { "› " } else { "  " };
             let label = fit(&row.label, columns - marker.width());
@@ -327,56 +327,46 @@ mod tests {
     }
 
     #[test]
-    fn rows_stack_upward_from_just_above_the_box_with_the_highlight_marked() {
+    fn rows_stack_downward_from_just_below_the_box_with_the_highlight_marked() {
         let mut picker = picker();
-        let mut buffer = screen(50, 12);
+        let mut buffer = screen(50, 20);
         picker.draw(&mut buffer, Rect::new(10, 8, 30, 1), "");
         assert!(
-            line(&buffer, 7).contains("› write the report"),
+            line(&buffer, 9).contains("› write the report"),
             "{}",
-            line(&buffer, 7)
+            line(&buffer, 9)
         );
         assert!(
-            line(&buffer, 6).contains("  email Sam"),
+            line(&buffer, 10).contains("  email Sam"),
             "{}",
-            line(&buffer, 6)
+            line(&buffer, 10)
         );
-        assert!(line(&buffer, 5).contains("  water the plants"));
-        assert_eq!(line(&buffer, 4), "▀".repeat(50));
-        // Nothing at or below the box, and nothing outside its columns.
+        assert!(line(&buffer, 11).contains("  water the plants"));
+        assert_eq!(line(&buffer, 12), "▀".repeat(50));
+        // Nothing at or above the box, and nothing outside its columns.
         assert_eq!(line(&buffer, 8), "▀".repeat(50));
-        assert_eq!(buffer[(9, 7)].symbol(), "▀");
-        assert_eq!(buffer[(40, 7)].symbol(), "▀");
-        // The rows are darkened and the highlighted one the most.
-        let Color::Rgb(plain, ..) = buffer[(0, 7)].fg else {
-            panic!()
-        };
-        let Color::Rgb(shaded, ..) = buffer[(10, 6)].fg else {
-            panic!()
-        };
-        let Color::Rgb(highlighted, ..) = buffer[(10, 7)].bg else {
-            panic!()
-        };
-        assert!(
-            shaded < plain && highlighted < shaded,
-            "{plain} {shaded} {highlighted}"
-        );
+        assert_eq!(buffer[(9, 9)].symbol(), "▀");
+        assert_eq!(buffer[(40, 9)].symbol(), "▀");
+        // The rows are solid, the highlighted one lighter than the rest.
+        assert_eq!(buffer[(10, 10)].bg, Color::Rgb(0, 0, 0));
+        assert_eq!(buffer[(10, 10)].fg, Color::Rgb(0, 0, 0));
+        assert_eq!(buffer[(10, 9)].bg, Color::Rgb(48, 48, 48));
     }
 
     #[test]
     fn a_group_goes_at_the_right_when_it_fits_and_is_left_off_when_it_does_not() {
         let mut picker = picker();
-        let mut buffer = screen(50, 12);
+        let mut buffer = screen(50, 20);
         picker.draw(&mut buffer, Rect::new(10, 8, 40, 1), "");
-        let row = line(&buffer, 7);
+        let row = line(&buffer, 9);
         // One column of padding is left after it.
         assert!(row.ends_with("Work▀"), "{row}");
         assert_eq!(row.matches("Work").count(), 1);
 
-        let mut narrow = screen(50, 12);
+        let mut narrow = screen(50, 20);
         picker.draw(&mut narrow, Rect::new(10, 8, 24, 1), "");
-        assert!(!line(&narrow, 7).contains("Work"), "{}", line(&narrow, 7));
-        assert!(line(&narrow, 7).contains("write the report"));
+        assert!(!line(&narrow, 9).contains("Work"), "{}", line(&narrow, 9));
+        assert!(line(&narrow, 9).contains("write the report"));
     }
 
     fn detailed() -> Picker {
@@ -408,11 +398,11 @@ mod tests {
     #[test]
     fn the_due_date_labels_and_group_go_at_the_right_in_that_order() {
         let mut picker = detailed();
-        let mut buffer = screen(80, 12);
+        let mut buffer = screen(80, 20);
         picker.draw(&mut buffer, Rect::new(5, 8, 70, 1), "");
-        let row = line(&buffer, 7);
+        let row = line(&buffer, 9);
         assert!(row.contains("today  @deep @quick  Work"), "{row}");
-        let other = line(&buffer, 6);
+        let other = line(&buffer, 10);
         assert!(other.contains("@errands"), "{other}");
     }
 
@@ -420,9 +410,9 @@ mod tests {
     fn a_narrow_row_drops_the_group_then_the_labels_then_the_due_date() {
         let ends = |width: u16| {
             let mut picker = detailed();
-            let mut buffer = screen(80, 12);
+            let mut buffer = screen(80, 20);
             picker.draw(&mut buffer, Rect::new(5, 8, width, 1), "");
-            line(&buffer, 7)
+            line(&buffer, 9)
         };
         // "› write the report" is 18 columns, and a detail needs 3 apart from it.
         assert!(
@@ -460,23 +450,23 @@ mod tests {
             vec![task("a very long title indeed for such a row", None)],
             None,
         );
-        let mut buffer = screen(40, 12);
+        let mut buffer = screen(40, 20);
         picker.draw(&mut buffer, Rect::new(10, 8, 20, 1), "");
-        let row = line(&buffer, 7);
+        let row = line(&buffer, 9);
         assert!(row.contains("› a very long tit…▀"), "{row}");
-        assert_eq!(buffer[(30, 7)].symbol(), "▀");
+        assert_eq!(buffer[(30, 9)].symbol(), "▀");
     }
 
     #[test]
     fn rows_for_typed_text_show_what_would_be_used() {
         let mut picker = picker();
-        let mut buffer = screen(50, 12);
+        let mut buffer = screen(50, 20);
         picker.draw(&mut buffer, Rect::new(5, 8, 40, 1), "sam");
-        assert!(line(&buffer, 7).contains("› email Sam"));
+        assert!(line(&buffer, 9).contains("› email Sam"));
         assert!(
-            line(&buffer, 6).contains("Use “sam”"),
+            line(&buffer, 10).contains("Use “sam”"),
             "{}",
-            line(&buffer, 6)
+            line(&buffer, 10)
         );
     }
 
@@ -484,60 +474,60 @@ mod tests {
     fn a_long_list_scrolls_to_keep_the_highlight_in_view() {
         let tasks = (0..20).map(|n| task(&format!("task {n}"), None)).collect();
         let mut picker = Picker::new(tasks, None);
-        let mut buffer = screen(40, 14);
-        let input = Rect::new(5, 12, 30, 1);
+        let mut buffer = screen(40, 24);
+        let input = Rect::new(5, 2, 30, 1);
         picker.draw(&mut buffer, input, "");
         // Eight rows, the first nearest the box.
-        assert!(line(&buffer, 11).contains("› task 0"));
-        assert!(line(&buffer, 4).contains("task 7"));
-        assert_eq!(line(&buffer, 3), "▀".repeat(40));
+        assert!(line(&buffer, 3).contains("› task 0"));
+        assert!(line(&buffer, 10).contains("task 7"));
+        assert_eq!(line(&buffer, 11), "▀".repeat(40));
 
         for _ in 0..9 {
             picker.step(true, "");
         }
-        let mut buffer = screen(40, 14);
+        let mut buffer = screen(40, 24);
         picker.draw(&mut buffer, input, "");
         assert!(
-            line(&buffer, 4).contains("› task 9"),
+            line(&buffer, 10).contains("› task 9"),
             "{}",
-            line(&buffer, 4)
+            line(&buffer, 10)
         );
-        assert!(line(&buffer, 11).contains("task 2"));
+        assert!(line(&buffer, 3).contains("task 2"));
 
-        // Coming back down moves the view only once the highlight leaves it.
+        // Coming back up moves the view only once the highlight leaves it.
         picker.step(false, "");
-        let mut buffer = screen(40, 14);
+        let mut buffer = screen(40, 24);
         picker.draw(&mut buffer, input, "");
-        assert!(line(&buffer, 5).contains("› task 8"));
-        assert!(line(&buffer, 11).contains("task 2"));
+        assert!(line(&buffer, 9).contains("› task 8"));
+        assert!(line(&buffer, 3).contains("task 2"));
 
         picker.reset();
-        let mut buffer = screen(40, 14);
+        let mut buffer = screen(40, 24);
         picker.draw(&mut buffer, input, "");
-        assert!(line(&buffer, 11).contains("› task 0"));
+        assert!(line(&buffer, 3).contains("› task 0"));
     }
 
     #[test]
-    fn it_uses_only_the_room_above_the_box() {
+    fn it_uses_only_the_room_below_the_box() {
         let mut picker = picker();
         let mut buffer = screen(50, 12);
-        picker.draw(&mut buffer, Rect::new(10, 2, 30, 1), "");
-        assert!(line(&buffer, 1).contains("› write the report"));
-        assert!(line(&buffer, 0).contains("  email Sam"));
+        picker.draw(&mut buffer, Rect::new(10, 9, 30, 1), "");
+        assert!(line(&buffer, 10).contains("› write the report"));
+        assert!(line(&buffer, 11).contains("  email Sam"));
 
         let mut none = screen(50, 12);
-        picker.draw(&mut none, Rect::new(10, 0, 30, 1), "");
+        picker.draw(&mut none, Rect::new(10, 11, 30, 1), "");
         assert!(none.content.iter().all(|cell| cell.symbol() == "▀"));
     }
 
     #[test]
     fn with_no_tasks_the_reason_is_shown_dimmed_and_cannot_be_chosen() {
         let mut picker = Picker::new(Vec::new(), Some("No open tasks in list.md".into()));
-        let mut buffer = screen(50, 12);
+        let mut buffer = screen(50, 20);
         picker.draw(&mut buffer, Rect::new(5, 8, 40, 1), "");
-        assert!(line(&buffer, 7).contains("No open tasks in list.md"));
-        assert!(!line(&buffer, 7).contains('›'));
-        assert_eq!(buffer[(7, 7)].fg, DIM);
+        assert!(line(&buffer, 9).contains("No open tasks in list.md"));
+        assert!(!line(&buffer, 9).contains('›'));
+        assert_eq!(buffer[(7, 9)].fg, DIM);
         assert_eq!(picker.choose(""), None);
     }
 }

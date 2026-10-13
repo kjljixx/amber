@@ -143,7 +143,7 @@ const NOTICE: Duration = Duration::from_secs(4);
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
 /// How far the caption's backing is darkened, and how many cells it reaches
 /// past each end of the text.
-const SCRIM_ALPHA: f32 = 0.3;
+const SCRIM_ALPHA: f32 = 0.2;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 const WHITE: [u8; 3] = [255, 255, 255];
@@ -1352,7 +1352,7 @@ fn run() -> io::Result<()> {
                             }
                             KeyCode::Up | KeyCode::Down => {
                                 if let Some(picker) = picker.as_mut() {
-                                    picker.step(key.code == KeyCode::Up, &task.text);
+                                    picker.step(key.code == KeyCode::Down, &task.text);
                                 }
                             }
                             KeyCode::Backspace => {
@@ -1743,7 +1743,7 @@ mod tests {
             cell.set_char('▀').set_fg(white).set_bg(white);
         }
         let mut text = digits("25:00").unwrap();
-        assert!(draw_halo(&mut buffer, area, &mut text) > 0);
+        assert!(draw_halo(&mut buffer, area, &mut text, false) > 0);
         let bars = Bars::layout(width, rows).unwrap();
         let (left, _) = bars.segments[0];
         let below_bar = &buffer[(left as u16, (bars.top / 2) as u16)];
@@ -2229,7 +2229,7 @@ mod tests {
         let row = |picker: &mut Picker| {
             let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 10));
             picker.draw(&mut buffer, Rect::new(5, 8, 70, 1), "");
-            (0..80).map(|x| buffer[(x, 7)].symbol()).collect::<String>()
+            (0..80).map(|x| buffer[(x, 9)].symbol()).collect::<String>()
         };
         assert!(row(&mut picker_for(&loader)).contains("Loading tasks"));
 

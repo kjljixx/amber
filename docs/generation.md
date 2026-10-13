@@ -143,7 +143,7 @@ time `t` is pressed, so edits show up at once. `amber::tasks` has the parser and
 a `Task` type for other hosts.
 
 The box above the clock filters the list as you type. The best match is just
-above the box, the rest stack upward, and `Up`/`Down` move the highlight. Enter
+below the box, the rest stack downward, and `Up`/`Down` move the highlight. Enter
 takes the highlighted row. The last row, "Use “…”", is whatever you typed, for a
 task that is not on the list; with no list, or nothing that matches, it is the
 only row. A file that cannot be read, or has nothing unfinished in it, says so
