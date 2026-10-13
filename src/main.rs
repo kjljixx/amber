@@ -459,9 +459,11 @@ impl TaskLine {
     }
 
     /// A request has started for `task`: the one chosen, or the text typed.
+    /// The box closes at once, without waiting for the gradient.
     fn started_for(&mut self, task: String) {
         self.in_flight = Some(task);
         self.automatic = false;
+        self.cancel();
     }
 
     /// A request has started for `description`, made without being typed.
@@ -479,15 +481,12 @@ impl TaskLine {
     }
 
     /// The gradient for the request in flight has arrived: its description is
-    /// now the one shown, whatever has been typed since.
+    /// now the one shown. A box opened since stays as it is.
     fn succeeded(&mut self) {
         if let Some(description) = self.in_flight.take() {
             self.shown = Some(description);
         }
-        if !std::mem::take(&mut self.automatic) {
-            self.open = false;
-            self.text.clear();
-        }
+        self.automatic = false;
     }
 
     /// The request failed. The old gradient and description stay.
@@ -2079,7 +2078,7 @@ mod tests {
         task.paste("  a misty forest  ");
         task.started_for(task.text.trim().to_owned());
         assert_eq!(task.shown, None);
-        task.paste("x"); // typed while waiting
+        assert!(!task.open && task.text.is_empty());
         task.succeeded();
         assert_eq!(task.shown.as_deref(), Some("a misty forest"));
         assert!(!task.open && task.has_line());
@@ -2097,22 +2096,38 @@ mod tests {
         assert_eq!(task.shown.as_deref(), Some("a misty forest"));
         assert!(!task.open && task.has_line());
 
-        // A failed request leaves the old gradient and description alone, and
-        // the box open with what was typed so it can be sent again.
+        // A failed request leaves the old gradient and description alone. The
+        // box closed when the request started.
         task.begin();
         task.paste("something else");
         task.started_for(task.text.trim().to_owned());
         task.failed();
-        assert!(task.open);
-        assert_eq!(task.text, "something else");
+        assert!(!task.open);
+        assert_eq!(task.text, "");
         assert_eq!(task.shown.as_deref(), Some("a misty forest"));
         assert_eq!(task.in_flight, None);
 
         // A new description replaces it, and only then.
+        task.begin();
+        task.paste("something else");
         task.started_for(task.text.trim().to_owned());
         task.succeeded();
         assert_eq!(task.shown.as_deref(), Some("something else"));
         assert_eq!(task.text, "");
+    }
+
+    #[test]
+    fn a_box_opened_while_waiting_is_left_alone_when_the_gradient_arrives() {
+        let mut task = TaskLine::default();
+        task.begin();
+        task.paste("a misty forest");
+        task.started_for(task.text.trim().to_owned());
+        task.begin();
+        task.paste("half a thought");
+        task.succeeded();
+        assert_eq!(task.shown.as_deref(), Some("a misty forest"));
+        assert!(task.open);
+        assert_eq!(task.text, "half a thought");
     }
 
     #[test]
