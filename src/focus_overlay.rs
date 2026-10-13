@@ -5,16 +5,19 @@ use std::{
     sync::Arc,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use amber::focus::OFF_TASK_BODY;
+use amber::{Rgb, focus::OFF_TASK_BODY};
 use eframe::egui::{self, Color32, ViewportBuilder};
 
 const DIM_ALPHA: u8 = 200;
-const VISIBLE_FOR: Duration = Duration::from_secs(8);
+const SCRIM_ALPHA: u8 = 140;
+const BORDER_WIDTH: f32 = 6.0;
+const BODY_PREFIX: &str = "Stay focused on ";
+const BODY_COLOR: Color32 = Color32::from_gray(220);
 
-pub fn run(message: String) -> eframe::Result {
+pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe::Result {
     // The parent can close stdin when it decides the screen is back on task.
     // Keeping this read off the UI thread leaves the window responsive.
     let (close_sender, close_receiver) = mpsc::channel();
@@ -26,7 +29,6 @@ pub fn run(message: String) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("Amber focus reminder")
-            .with_maximized(true)
             .with_decorations(false)
             .with_has_shadow(false)
             .with_always_on_top()
@@ -43,8 +45,12 @@ pub fn run(message: String) -> eframe::Result {
             install_font(&creation_context.egui_ctx);
             Ok(Box::new(Overlay {
                 message,
+                task,
+                accent: accent.map_or(Color32::WHITE, |[red, green, blue]| {
+                    Color32::from_rgb(red, green, blue)
+                }),
                 close_receiver,
-                shown_at: Instant::now(),
+                covers_monitor: false,
             }))
         }),
     )
@@ -86,8 +92,27 @@ fn install_font(context: &egui::Context) {
 
 struct Overlay {
     message: String,
+    task: Option<String>,
+    accent: Color32,
     close_receiver: Receiver<()>,
-    shown_at: Instant,
+    covers_monitor: bool,
+}
+
+impl Overlay {
+    fn subtitle(&self, max_width: f32) -> egui::text::LayoutJob {
+        let font = egui::FontId::new(30.0, egui::FontFamily::Proportional);
+        let format = |color| egui::TextFormat::simple(font.clone(), color);
+        let mut job = egui::text::LayoutJob::default();
+        match &self.task {
+            Some(task) => {
+                job.append(BODY_PREFIX, 0.0, format(BODY_COLOR));
+                job.append(task, 0.0, format(self.accent));
+            }
+            None => job.append(OFF_TASK_BODY, 0.0, format(BODY_COLOR)),
+        }
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+        job
+    }
 }
 
 impl eframe::App for Overlay {
@@ -96,14 +121,18 @@ impl eframe::App for Overlay {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let should_close = self.shown_at.elapsed() >= VISIBLE_FOR
-            || match self.close_receiver.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => true,
-                Err(TryRecvError::Empty) => false,
-            };
-        if should_close {
+        if !matches!(self.close_receiver.try_recv(), Err(TryRecvError::Empty)) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
+        }
+        if !self.covers_monitor {
+            if let Some(monitor_size) = ui.ctx().input(|input| input.viewport().monitor_size) {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::ZERO));
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(monitor_size));
+                self.covers_monitor = true;
+            }
         }
         let painter = ui.painter();
         let title = painter.layout_no_wrap(
@@ -111,11 +140,7 @@ impl eframe::App for Overlay {
             egui::FontId::new(68.0, egui::FontFamily::Name("Amber Inter Bold".into())),
             Color32::WHITE,
         );
-        let subtitle = painter.layout_no_wrap(
-            OFF_TASK_BODY.into(),
-            egui::FontId::new(30.0, egui::FontFamily::Proportional),
-            Color32::from_gray(220),
-        );
+        let subtitle = painter.layout_job(self.subtitle(ui.max_rect().width() * 0.8));
         let padding = egui::vec2(36.0, 28.0);
         let gap = 20.0;
         let content_width = title.size().x.max(subtitle.size().x);
@@ -126,7 +151,14 @@ impl eframe::App for Overlay {
             ui.max_rect().center(),
             egui::vec2(panel_size, panel_height),
         );
+        painter.rect_filled(ui.max_rect(), 0.0, Color32::from_black_alpha(SCRIM_ALPHA));
         painter.rect_filled(panel, 16.0, Color32::from_black_alpha(DIM_ALPHA));
+        painter.rect_stroke(
+            panel,
+            16.0,
+            egui::Stroke::new(BORDER_WIDTH, self.accent),
+            egui::StrokeKind::Inside,
+        );
         let content_top = panel.center().y - content_height * 0.5;
         painter.galley(
             egui::pos2(panel.center().x - title.size().x * 0.5, content_top),
@@ -139,7 +171,7 @@ impl eframe::App for Overlay {
                 content_top + title.size().y + gap,
             ),
             subtitle,
-            Color32::from_gray(220),
+            BODY_COLOR,
         );
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }

@@ -1,6 +1,6 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
 
-use crate::color::Rgb;
+use crate::color::{Rgb, rgb_to_oklab};
 
 #[derive(Clone, Copy, Default)]
 struct ColorPair {
@@ -19,6 +19,18 @@ pub struct Preview {
 impl Preview {
     pub fn size(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+
+    /// The most colorful sample, so a border drawn from it never turns grey.
+    pub fn most_vivid(&self) -> Option<Rgb> {
+        let chroma = |rgb: Rgb| {
+            let [_, a, b] = rgb_to_oklab(rgb);
+            a.hypot(b)
+        };
+        self.cells
+            .iter()
+            .flat_map(|pair| [pair.top, pair.bottom])
+            .max_by(|one, other| chroma(*one).total_cmp(&chroma(*other)))
     }
 
     pub fn rebuild(&mut self, width: u16, height: u16, sample: impl Fn(f32, f32) -> Rgb) {

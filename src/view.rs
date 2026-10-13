@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 use ratatui::{Frame, buffer::Buffer, layout::Rect, widgets::Widget};
 use tracing::{info, warn};
 
-use crate::{CompiledRecipe, HalfBlocks, Preview, Recipe, animation::Animation};
+use crate::{
+    CompiledRecipe, HalfBlocks, Preview, Recipe, Rgb, animation::Animation,
+    color::with_min_lightness,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Playback {
@@ -31,6 +34,8 @@ pub struct RenderStats {
 
 /// How often the time spent drawing is summed up in the log.
 const SUMMARY_EVERY: Duration = Duration::from_secs(10);
+/// Keeps the accent readable on the overlay's near-black panel.
+const ACCENT_MIN_LIGHTNESS: f32 = 0.75;
 
 /// The rebuilds since the last log line.
 struct RenderWindow {
@@ -308,6 +313,13 @@ impl GradientView {
     /// None means this view requires no animation wakeup.
     pub fn wait_duration(&self, now: Instant) -> Option<Duration> {
         self.animation.wait_duration(now)
+    }
+
+    /// The most colorful color currently on screen, once the view has been drawn.
+    pub fn accent(&self) -> Option<Rgb> {
+        self.preview
+            .most_vivid()
+            .map(|rgb| with_min_lightness(rgb, ACCENT_MIN_LIGHTNESS))
     }
 
     pub fn stats(&self) -> RenderStats {

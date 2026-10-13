@@ -321,13 +321,22 @@ impl Drop for FocusOverlay {
 }
 
 /// Open the cross-platform dimming overlay without blocking the timer.
-pub fn show_focus_overlay(message: &str) -> std::io::Result<Option<FocusOverlay>> {
+pub fn show_focus_overlay(
+    message: &str,
+    accent: Option<amber::Rgb>,
+    task: Option<&str>,
+) -> std::io::Result<Option<FocusOverlay>> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let mut command = Command::new(std::env::current_exe()?);
+        command.arg("--focus-overlay").arg(message);
+        if let Some([red, green, blue]) = accent {
+            command.args(["--accent", &format!("#{red:02x}{green:02x}{blue:02x}")]);
+        }
+        if let Some(task) = task {
+            command.args(["--task", task]);
+        }
         command
-            .arg("--focus-overlay")
-            .arg(message)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -346,7 +355,7 @@ pub fn show_focus_overlay(message: &str) -> std::io::Result<Option<FocusOverlay>
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = message;
+        let _ = (message, accent, task);
         Ok(None)
     }
 }

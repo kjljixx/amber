@@ -87,6 +87,10 @@ impl FocusChecker {
         })
     }
 
+    pub fn task(&self) -> Option<&str> {
+        self.task.as_deref()
+    }
+
     /// Begin a fresh sequence when the selected task changes. The first image
     /// follows the current cadence, then checks repeat at that interval.
     pub fn set_task(&mut self, task: Option<String>, now: Instant) {
@@ -323,7 +327,7 @@ impl Client {
     fn is_off_task(&self, task: &str, jpeg: &[u8], check_id: u64) -> Result<Decision, String> {
         let data_url = format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg));
         let prompt = format!(
-            "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If Amber's reminder overlay is visible, ignore its text and judge the underlying activity. If the screenshot is ambiguous, judge it on task."
+            "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If an 'Let's get back on track' overlay is visible, ignore it and judge the underlying window instead. If the screenshot is ambiguous, judge it on task."
         );
         let request = json!({
             "model": self.model,

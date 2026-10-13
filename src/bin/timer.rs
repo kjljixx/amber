@@ -674,8 +674,8 @@ fn main() -> std::process::ExitCode {
         feature = "focus-check",
         any(target_os = "macos", target_os = "windows")
     ))]
-    if let Some(message) = focus_overlay_message() {
-        return match focus_overlay::run(message) {
+    if let Some((message, accent, task)) = focus_overlay_message() {
+        return match focus_overlay::run(message, accent, task) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("timer overlay: {error}");
@@ -697,13 +697,26 @@ fn main() -> std::process::ExitCode {
     feature = "focus-check",
     any(target_os = "macos", target_os = "windows")
 ))]
-fn focus_overlay_message() -> Option<String> {
+fn focus_overlay_message() -> Option<(String, Option<amber::Rgb>, Option<String>)> {
     let mut args = std::env::args().skip(1);
-    if args.next()?.as_str() == "--focus-overlay" {
-        Some(args.next().unwrap_or_else(|| OFF_TASK_TITLE.into()))
-    } else {
-        None
+    if args.next()?.as_str() != "--focus-overlay" {
+        return None;
     }
+    let message = args.next().unwrap_or_else(|| OFF_TASK_TITLE.into());
+    let (mut accent, mut task) = (None, None);
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--accent" => {
+                accent = args.next().and_then(|hex| {
+                    let digits = u32::from_str_radix(hex.strip_prefix('#')?, 16).ok()?;
+                    digits.to_be_bytes()[1..].try_into().ok()
+                });
+            }
+            "--task" => task = args.next(),
+            _ => {}
+        }
+    }
+    Some((message, accent, task))
 }
 
 /// What the command line asks for.
@@ -1106,7 +1119,11 @@ fn run() -> io::Result<()> {
                         info!(target: FOCUS_OVERLAY, "off-task reminder");
                         alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
                         if focus_overlay.is_none() {
-                            match alarm::show_focus_overlay(OFF_TASK_TITLE) {
+                            match alarm::show_focus_overlay(
+                                OFF_TASK_TITLE,
+                                background.accent(),
+                                checker.task(),
+                            ) {
                                 Ok(Some(overlay)) => {
                                     info!(target: FOCUS_OVERLAY, "overlay opened");
                                     focus_overlay = Some(overlay);
