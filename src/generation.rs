@@ -12,25 +12,29 @@ use serde_json::{Value, json};
 
 use crate::{
     Recipe,
+    phrases::{self, Phrase},
     scene::{COLORS, ColorSpec, Element, Scene, Style, family},
 };
 
 const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 pub const DEFAULT_MODEL: &str = "typesafe/jev-1.13";
 
-/// Pick an unbiased warp seed from the operating system's random source.
-fn random_warp_seed() -> Result<u16, String> {
-    const RANGE: u16 = 1000;
-    const ACCEPT_BELOW: u16 = u16::MAX - (u16::MAX % RANGE);
+/// Pick an unbiased number below `range` from the operating system's random source.
+pub(crate) fn random_below(range: u32) -> Result<u32, String> {
+    let accept_below = u32::MAX - (u32::MAX % range);
     loop {
-        let mut bytes = [0_u8; 2];
+        let mut bytes = [0_u8; 4];
         getrandom::fill(&mut bytes)
-            .map_err(|error| format!("Could not choose a random warp seed: {error}"))?;
-        let value = u16::from_le_bytes(bytes);
-        if value < ACCEPT_BELOW {
-            return Ok(value % RANGE);
+            .map_err(|error| format!("Could not choose a random number: {error}"))?;
+        let value = u32::from_le_bytes(bytes);
+        if value < accept_below {
+            return Ok(value % range);
         }
     }
+}
+
+fn random_warp_seed() -> Result<u16, String> {
+    random_below(1000).map(|seed| seed as u16)
 }
 
 /// Jev's layout choices are the scene grid rules.
@@ -54,6 +58,8 @@ pub struct GeneratedGradient {
     pub radians_per_second: f64,
     pub design: Design,
     pub cost_usd: Option<f64>,
+    /// The lyric the gradient was made from, when it was chosen for a moment.
+    pub phrase: Option<Phrase>,
 }
 
 /// Keeps credentials private; cloning the client reuses its HTTP connection pool.
@@ -110,14 +116,58 @@ impl JevClient {
         self.generate_at(prompt, ENDPOINT)
     }
 
+    /// Blocking HTTP calls; hosts should invoke them on a worker thread. Jev
+    /// first chooses, from lyric lines read from `pool_path`, the one that best
+    /// evokes `moment`, and the gradient is then made from that lyric.
+    pub fn generate_for_moment(
+        &self,
+        moment: &str,
+        pool_path: &Path,
+    ) -> Result<GeneratedGradient, String> {
+        let pool = phrases::load_pool(pool_path)?;
+        self.generate_for_moment_at(moment, &pool, ENDPOINT)
+    }
+
+    fn generate_for_moment_at(
+        &self,
+        moment: &str,
+        pool: &[String],
+        endpoint: &str,
+    ) -> Result<GeneratedGradient, String> {
+        let candidates = phrases::sample(pool, phrases::CANDIDATES)?;
+        let request = phrases::choice_request(moment, &candidates, &self.model);
+        let envelope = self.post_decision(&request, endpoint)?;
+        let phrase = phrases::best_phrase(&envelope.answers, &candidates, cost(&envelope))?;
+        let mut gradient = self.generate_at(&phrase.text, endpoint)?;
+        gradient.cost_usd = match (phrase.cost_usd, gradient.cost_usd) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+        };
+        gradient.phrase = Some(phrase);
+        Ok(gradient)
+    }
+
     fn generate_at(&self, prompt: &str, endpoint: &str) -> Result<GeneratedGradient, String> {
         let request = decision_request(prompt, &self.model)?;
+        let envelope = self.post_decision(&request, endpoint)?;
+        let design = parse_design(&envelope.answers)?;
+        let recipe = design.to_recipe(prompt)?;
+        Ok(GeneratedGradient {
+            recipe,
+            radians_per_second: f64::from(0.2 + 0.9 * design.energy / 4.0) * 0.3,
+            design,
+            cost_usd: cost(&envelope),
+            phrase: None,
+        })
+    }
+
+    fn post_decision(&self, request: &Value, endpoint: &str) -> Result<Envelope, String> {
         let mut response = self
             .agent
             .post(endpoint)
             .header("Authorization", format!("Bearer {}", self.key))
             .header("X-Title", "Amber Gradients")
-            .send_json(&request)
+            .send_json(request)
             .map_err(|_| "Could not reach OpenRouter (connection or timeout)".to_string())?;
         match response.status().as_u16() {
             200..=299 => {}
@@ -126,24 +176,21 @@ impl JevClient {
             429 => return Err("OpenRouter rate limit reached; try again shortly".into()),
             code => return Err(format!("OpenRouter returned HTTP {code}")),
         }
-        let envelope: Envelope = response
+        response
             .body_mut()
             .with_config()
             .limit(256 * 1024)
             .read_json()
-            .map_err(|_| "OpenRouter returned an invalid decision response".to_string())?;
-        let design = parse_design(&envelope.answers)?;
-        let recipe = design.to_recipe(prompt)?;
-        Ok(GeneratedGradient {
-            recipe,
-            radians_per_second: f64::from(0.2 + 0.9 * design.energy / 4.0) * 0.3,
-            design,
-            cost_usd: envelope
-                .usage
-                .and_then(|usage| usage.cost)
-                .filter(|cost| cost.is_finite() && *cost >= 0.0),
-        })
+            .map_err(|_| "OpenRouter returned an invalid decision response".to_string())
     }
+}
+
+fn cost(envelope: &Envelope) -> Option<f64> {
+    envelope
+        .usage
+        .as_ref()
+        .and_then(|usage| usage.cost)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
 }
 
 type Pending = (Instant, Receiver<Result<GeneratedGradient, String>>);
@@ -215,19 +262,51 @@ impl Generator {
             self.status = "Loaded cached design with a fresh warp".into();
             return Some(cached);
         }
+        self.start(
+            "Jev is choosing colors, layout, and movement…",
+            move |client| client.generate(&prompt),
+        );
+        None
+    }
+
+    /// Ask for a gradient for a moment, such as "Friday golden hour in October
+    /// (autumn), light rain, cool". Jev first chooses a lyric line that suits
+    /// the moment, and the gradient is made from that lyric (see
+    /// [`GeneratedGradient::phrase`]). Does nothing while a request is in
+    /// flight or if the moment is empty. The result arrives through
+    /// [`poll`](Self::poll); it is not cached.
+    pub fn submit_moment(&mut self, moment: &str) {
+        if self.pending.is_some() {
+            return;
+        }
+        let moment = moment.trim().to_string();
+        if moment.is_empty() {
+            self.status = "Describe the moment first".into();
+            return;
+        }
+        self.submitted = moment.clone();
+        self.start("Jev is choosing a lyric for the moment…", move |client| {
+            client.generate_for_moment(&moment, Path::new(phrases::POOL_PATH))
+        });
+    }
+
+    fn start(
+        &mut self,
+        status: &str,
+        work: impl FnOnce(&JevClient) -> Result<GeneratedGradient, String> + Send + 'static,
+    ) {
         let (send, receive) = mpsc::channel();
-        self.status = "Jev is choosing colors, layout, and movement…".into();
+        self.status = status.into();
         match std::thread::Builder::new()
             .name("jev-generation".into())
             .spawn(move || {
-                let result = JevClient::from_env(Path::new(".env"))
-                    .and_then(|client| client.generate(&prompt));
+                let result =
+                    JevClient::from_env(Path::new(".env")).and_then(|client| work(&client));
                 let _ = send.send(result);
             }) {
             Ok(_) => self.pending = Some((Instant::now(), receive)),
             Err(_) => self.status = "Could not start generation worker".into(),
         }
-        None
     }
 
     /// The finished request's result, once, or `None` if there is nothing new.
@@ -243,8 +322,16 @@ impl Generator {
         };
         match &result {
             Ok(gradient) => {
+                let lyric = gradient.phrase.as_ref().map_or_else(String::new, |phrase| {
+                    format!(
+                        "“{}” ({:.1}% of {}) · ",
+                        phrase.text,
+                        phrase.probability * 100.0,
+                        phrase.candidates
+                    )
+                });
                 self.status = format!(
-                    "Generated in {:.1}s · {} / {} / {} · {:?}",
+                    "Generated in {:.1}s · {lyric}{} / {} / {} · {:?}",
                     start.elapsed().as_secs_f64(),
                     gradient.design.hues[0],
                     gradient.design.hues[1],
@@ -252,11 +339,13 @@ impl Generator {
                     gradient.design.layout
                 );
                 // Bound session memory; repeated prompts do not need another API call.
-                if self.cache.len() >= 32 {
-                    self.cache.clear();
+                if gradient.phrase.is_none() {
+                    if self.cache.len() >= 32 {
+                        self.cache.clear();
+                    }
+                    self.cache
+                        .insert(self.submitted.to_lowercase(), gradient.clone());
                 }
-                self.cache
-                    .insert(self.submitted.to_lowercase(), gradient.clone());
             }
             Err(message) => self.status = format!("{message} · Enter to retry"),
         }
@@ -336,7 +425,7 @@ struct Usage {
 }
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-enum Answer {
+pub(crate) enum Answer {
     Choice {
         choice: String,
         probabilities: BTreeMap<String, f32>,
@@ -681,6 +770,42 @@ mod tests {
         assert_eq!(request["state"]["description"], "sunset");
         assert_eq!(request["questions"]["layout"]["type"], "choice");
         assert!(generated.recipe.compile().is_ok());
+    }
+
+    #[test]
+    fn lyric_choice_roundtrips_through_local_mock_only() {
+        let client = JevClient::new("dummy-test-key".into(), DEFAULT_MODEL.into()).unwrap();
+        let candidates = vec!["first line".to_string(), "second line".to_string()];
+        let body = json!({
+            "answers": {"best_lyric": {"type": "choice", "choice": "lyric_002",
+                "probabilities": {"lyric_001": 0.25, "lyric_002": 0.75}}},
+            "usage": {"cost": 0.002}
+        });
+        let (url, worker) = mock(200, body.to_string());
+        let request = phrases::choice_request("Friday afternoon", &candidates, &client.model);
+        let envelope = client.post_decision(&request, &url).unwrap();
+        let phrase = phrases::best_phrase(&envelope.answers, &candidates, cost(&envelope)).unwrap();
+        assert_eq!(phrase.text, "second line");
+        assert_eq!(phrase.cost_usd, Some(0.002));
+        let sent = worker.join().unwrap();
+        assert_eq!(
+            sent["questions"]["best_lyric"]["criteria"]["lyric_001"],
+            "first line"
+        );
+    }
+
+    #[test]
+    fn a_moment_needs_text_and_waits_for_a_request_in_flight() {
+        let mut generator = Generator::new();
+        generator.submit_moment("   ");
+        assert!(!generator.is_pending());
+        assert!(generator.status().contains("Describe the moment"));
+
+        let (_send, receive) = mpsc::channel();
+        generator.pending = Some((Instant::now(), receive));
+        generator.submit_moment("Friday afternoon");
+        assert!(generator.is_pending());
+        assert!(generator.submitted.is_empty());
     }
 
     #[test]

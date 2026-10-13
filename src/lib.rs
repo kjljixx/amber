@@ -15,6 +15,8 @@ pub mod generation;
 mod gradient;
 mod half_blocks;
 mod overlay;
+#[cfg(feature = "generation")]
+pub mod phrases;
 pub mod presets;
 mod recipe;
 pub mod scene;

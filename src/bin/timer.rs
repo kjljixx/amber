@@ -35,7 +35,10 @@
 //!
 //! The first gradient is made for the moment: the weekday, time of day, month
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
-//! cool". Every task after that is sent with only a hint of it, its light and
+//! cool". Jev picks the lyric line that best fits it from `assets/phrases.txt`
+//! (made by `05_build_phrase_pool.py`), and the gradient is made from that
+//! lyric, which is shown above the clock. Every task after that is sent with
+//! only a hint of the moment, its light and
 //! weather ("golden hour, light rain"), so the task leads. The weather is for
 //! wherever the machine's IP address seems to be; `--location Lisbon` names a
 //! place instead, and `--no-weather` skips the lookup and uses the time alone.
@@ -383,6 +386,14 @@ impl TaskLine {
     fn started_automatically(&mut self, description: String) {
         self.in_flight = Some(description);
         self.automatic = true;
+    }
+
+    /// The request in flight turned out to be made from `description`, such as
+    /// the lyric chosen for the moment, and that is what is shown once it arrives.
+    fn describe_as(&mut self, description: String) {
+        if self.in_flight.is_some() {
+            self.in_flight = Some(description);
+        }
     }
 
     /// The gradient for the request in flight has arrived: its description is
@@ -1040,10 +1051,8 @@ fn run() -> io::Result<()> {
                 // already been asked for in the meantime.
                 if task.shown.is_none() && task.in_flight.is_none() {
                     task.started_automatically(description.clone());
-                    if let Some(cached) = generator.submit(&description) {
-                        apply(&mut background, &mut speed, &cached)?;
-                        task.succeeded();
-                    } else if !generator.is_pending() {
+                    generator.submit_moment(&description);
+                    if !generator.is_pending() {
                         task.failed();
                     }
                     redraw = true;
@@ -1071,9 +1080,20 @@ fn run() -> io::Result<()> {
                 match result {
                     Ok(gradient) => {
                         apply(&mut background, &mut speed, &gradient)?;
+                        if let Some(phrase) = gradient.phrase {
+                            task.describe_as(phrase.text);
+                        }
                         task.succeeded();
                     }
-                    Err(_) => task.failed(),
+                    Err(message) => {
+                        if task.automatic {
+                            notice = Some(Notice {
+                                text: message,
+                                until: now + NOTICE,
+                            });
+                        }
+                        task.failed();
+                    }
                 }
                 redraw = true;
             }
@@ -1821,6 +1841,7 @@ mod tests {
                 focus: 1.5,
             },
             cost_usd: None,
+            phrase: None,
         }
     }
 
@@ -1888,6 +1909,21 @@ mod tests {
         task.succeeded();
         assert_eq!(task.shown.as_deref(), Some("something else"));
         assert_eq!(task.text, "");
+    }
+
+    #[test]
+    fn the_lyric_chosen_for_the_moment_replaces_its_description() {
+        let mut task = TaskLine::default();
+        task.started_automatically("Friday morning in May".into());
+        task.describe_as("morning has broken".into());
+        task.succeeded();
+        assert_eq!(task.shown.as_deref(), Some("morning has broken"));
+
+        // With no request in flight there is nothing to rename.
+        let mut task = TaskLine::default();
+        task.describe_as("morning has broken".into());
+        task.succeeded();
+        assert_eq!(task.shown, None);
     }
 
     #[test]

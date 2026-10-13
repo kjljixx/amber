@@ -187,6 +187,18 @@ before you choose a task: `amber::ambient` builds a line such as "Friday golden
 hour in October (autumn), light rain, cool" from the local weekday, time of day,
 month and weather. Try `cargo run --offline --example ambient`.
 
+That line does not go to the gradient request directly. Jev first chooses, from
+255 random lyric lines, the one that best evokes the moment (one `choice`
+question, as in `04_jev_choice.py`). The gradient is then made from that lyric
+alone, and the lyric is the caption above the clock.
+
+The lines come from `assets/phrases.txt`, which Git ignores. Make it once with
+`python 05_build_phrase_pool.py`: it reads the Genius lyrics dataset (see
+`01_download_lyrics.py`) and keeps 200,000 rock and pop lines, one per song, of 3 to 12 words.
+Without that file the startup gradient fails and the timer shows why.
+`amber::phrases` has the sampling and the request; `Generator::submit_moment`
+runs both requests on one worker.
+
 Every task you choose after that is sent with only a hint of it, its light and
 weather in a few words ("write the report, with a hint of golden hour, light
 rain"). A task says little about color and the full line says a lot, so sending
@@ -205,8 +217,9 @@ the whole of it let the weather decide the gradient.
 - Day parts follow the sun when the forecast has sunrise and sunset (dawn,
   golden hour, dusk) and the clock otherwise. The time used is the local time
   at the weather's place, so the sun and the clock agree.
-- It makes one Jev request per launch. If there is no API key or the request
-  fails, nothing is shown, and a description you type is unaffected. A gradient
+- It makes two Jev requests per launch: the lyric, then the gradient. If there
+  is no API key, no phrase file, or a request fails, nothing is shown and the
+  timer shows the reason briefly, and a description you type is unaffected. A gradient
   you ask for before it arrives is kept.
 
 For renderer-only consumers, use `default-features = false` in the Amber Cargo
