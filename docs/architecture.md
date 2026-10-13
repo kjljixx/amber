@@ -4,8 +4,8 @@ Amber is a library (`src/lib.rs`) and three binaries. The library renders animat
 
 ```text
 ┌──────────────────────────────── BINARIES ────────────────────────────────┐
-│  amber (main.rs, cli.rs)      jev (bin/jev.rs)       timer (bin/timer.rs)│
-│  preset/recipe/scene viewer   prompt → gradient TUI  pomodoro clock      │
+│  gradient (bin/gradient.rs)  jev (bin/jev.rs)       amber (main.rs)      │
+│  preset/recipe/scene viewer  prompt → gradient TUI  home clock, pomodoro │
 │                                                                          │
 │  local modules: speed_control · picker · alarm · focus_overlay           │
 └───────┬──────────────────────────┬───────────────────────┬───────────────┘
@@ -52,7 +52,7 @@ Amber is a library (`src/lib.rs`) and three binaries. The library renders animat
 
 | Layer | Modules | Role |
 |---|---|---|
-| Binaries | `main`, `bin/jev`, `bin/timer` | Own the terminal, event loop, and key handling. |
+| Binaries | `main` (`amber`), `bin/gradient`, `bin/jev` | Own the terminal, event loop, and key handling. |
 | Input modules | `generation`, `ambient`, `tasks`, `audio`, `focus` | Gather outside data on worker threads. Each one reports back through a channel. |
 | Recipe sources | `scene`, `presets`, JSON files | Produce a `Recipe`. Scenes compile to points. |
 | Rendering core | `view`, `recipe`, `gradient`, `warp`, `animation`, `color`, `half_blocks` | Turn a `Recipe` plus time into colored half-block cells. No network, no input. |
@@ -60,7 +60,7 @@ Amber is a library (`src/lib.rs`) and three binaries. The library renders animat
 
 ## Which binary uses what
 
-| Module | `amber` | `jev` | `timer` |
+| Module | `gradient` | `jev` | `amber` |
 |---|---|---|---|
 | `view` / rendering core | yes | yes | yes |
 | `presets`, `scene` | yes | via `generation` | via `generation` |
@@ -79,14 +79,14 @@ Task text + `ambient::describe` → `JevClient` request → `Design` (hues, layo
 **Audio reaction**
 `Capture` → `Analyzer` → `Excitement { level, pulse, activity, tone }` → `GradientView::set_excitement`.
 
-**Focus check (timer only)**
+**Focus check (`amber` only)**
 Every 20 seconds in a work phase: screenshot → Luna Decisions → `Event::OffTask` → desktop notification and `focus_overlay` window.
 
 ## Feature flags
 
 | Feature | Enables |
 |---|---|
-| `generation` | `generation`, `ureq`, `getrandom`; required by `jev` and `timer` |
+| `generation` | `generation`, `ureq`, `getrandom`; required by `jev` and `amber` |
 | `audio` | `audio::Capture` (`cpal`) |
 | `focus-check` | `focus`, `focus_overlay` (`xcap`, `image`, `base64`, `eframe`) |
 
@@ -95,6 +95,6 @@ Every 20 seconds in a work phase: screenshot → Luna Decisions → `Event::OffT
 ## Logging
 
 `amber::log` routes `tracing` events to five files by module path:
-`gradient.log`, `tasks.log`, `audio.log`, `focus.log`, and `timer.log`, in
+`gradient.log`, `tasks.log`, `audio.log`, `focus.log`, and `amber.log`, in
 `logs/run-<timestamp>-<pid>/`. Each binary calls `log::init()` once. See
 `docs/generation.md` for the file contents, `--debug`, and `RUST_LOG`.

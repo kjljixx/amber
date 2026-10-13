@@ -2,7 +2,7 @@
 name = "amber"
 version = "0.1.0"
 edition = "2024"
-default-run = "timer"
+default-run = "amber"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -35,8 +35,8 @@ path = "src/bin/jev.rs"
 required-features = ["generation"]
 
 [[bin]]
-name = "timer"
-path = "src/bin/timer.rs"
+name = "amber"
+path = "src/main.rs"
 required-features = ["generation"]
 
 # Keep debug symbols, but optimize the CPU renderer for normal `cargo run`.

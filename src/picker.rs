@@ -45,6 +45,8 @@ pub struct Picker {
     offset: usize,
     /// The day due dates are said relative to.
     today: NaiveDate,
+    /// Whether an empty box lists "Back to Home" first, which chooses nothing.
+    offer_home: bool,
 }
 
 impl Picker {
@@ -56,7 +58,14 @@ impl Picker {
             selected: 0,
             offset: 0,
             today: Local::now().date_naive(),
+            offer_home: false,
         }
+    }
+
+    /// With `offer`, an empty box lists a first row that chooses no task, for
+    /// going back to the home view.
+    pub fn offer_home(&mut self, offer: bool) {
+        self.offer_home = offer;
     }
 
     /// Replace the tasks, keeping the highlight where it is: more may arrive
@@ -67,19 +76,23 @@ impl Picker {
     }
 
     /// The tasks that match `query`, then, when something has been typed, a row
-    /// for using it as it is.
+    /// for using it as it is. With nothing typed, the row for no task comes
+    /// first when it is offered.
     fn rows(&self, query: &str) -> Vec<Row> {
         let typed = query.trim();
-        let mut rows: Vec<Row> = self
-            .tasks
-            .iter()
-            .filter(|task| task.matches(typed))
-            .map(|task| Row {
-                label: task.title.clone(),
-                details: task.details(self.today),
-                choice: task.title.clone(),
-            })
-            .collect();
+        let mut rows: Vec<Row> = Vec::new();
+        if typed.is_empty() && self.offer_home {
+            rows.push(Row {
+                label: "Back to Home".into(),
+                details: Vec::new(),
+                choice: String::new(),
+            });
+        }
+        rows.extend(self.tasks.iter().filter(|task| task.matches(typed)).map(|task| Row {
+            label: task.title.clone(),
+            details: task.details(self.today),
+            choice: task.title.clone(),
+        }));
         if !typed.is_empty() {
             rows.push(Row {
                 label: format!("Use “{typed}”"),
@@ -242,6 +255,18 @@ mod tests {
         );
         assert_eq!(labels(&picker, "   "), labels(&picker, ""));
         assert_eq!(picker.choose("").as_deref(), Some("write the report"));
+    }
+
+    #[test]
+    fn an_empty_box_can_offer_back_to_home_first_and_typing_removes_it() {
+        let mut picker = picker();
+        picker.offer_home(true);
+        assert_eq!(
+            labels(&picker, ""),
+            ["Back to Home", "write the report", "email Sam", "water the plants"]
+        );
+        assert_eq!(picker.choose("").as_deref(), Some(""));
+        assert_eq!(labels(&picker, "sam"), ["email Sam", "Use “sam”"]);
     }
 
     #[test]

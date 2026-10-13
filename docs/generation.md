@@ -62,7 +62,7 @@ optional API-reported cost. Configuration loading is explicit; the library never
 reads `.env` merely because it is imported. Credentials are not included in
 debug output or server-error messages.
 
-`amber::generation::Generator` is the non-blocking wrapper `jev` and `timer`
+`amber::generation::Generator` is the non-blocking wrapper `jev` and `amber`
 share, for a host that does not want to manage a thread itself:
 
 ```rust
@@ -130,7 +130,7 @@ that terminal to close it sooner.
 Screen Recording permission flow; allow Amber in System Settings → Privacy &
 Security → Screen & System Audio Recording and restart Amber if capture does
 not resume. Windows has no equivalent per-app screen recording prompt. If
-capture or a model call fails, the timer shows an error and retries on the next
+capture or a model call fails, amber shows an error and retries on the next
 check.
 
 ## Choosing the task from a list
@@ -151,9 +151,9 @@ in place of the rows.
 
 ### From Todoist
 
-The timer chooses from your Todoist account by default; `--tasks` names a file
+Amber chooses from your Todoist account by default; `--tasks` names a file
 instead, and `--no-todoist` turns the list off (`--tasks` and `--todoist` are
-alternatives). Without a token the timer still starts and shows a notice. Make a personal API token in Todoist's settings
+alternatives). Without a token amber still starts and shows a notice. Make a personal API token in Todoist's settings
 under Integrations, then Developer, and set `TODOIST_API_TOKEN` in the
 environment or the local `.env` file, as for the Jev key. `.env.example` has the
 line.
@@ -175,13 +175,13 @@ line.
   While it loads, the box says so. If a fetch fails the last list stays, with a
   message at the top, and if there never was a list the reason is shown.
 - The token goes only to `api.todoist.com`, in an `Authorization` header, and is
-  never printed. The timer only reads: it never completes or changes a task.
+  never printed. Amber only reads: it never completes or changes a task.
   Todoist sees the filter you use. Reading is two requests (tasks, then project
   names) per fetch.
 
 ## A first gradient from the moment
 
-At startup the timer asks Jev for a gradient for the moment, so there is one
+At startup amber asks Jev for a gradient for the moment, so there is one
 before you choose a task: `amber::ambient` builds a line such as "Friday golden
 hour in October (autumn), light rain, cool" from the local weekday, time of day,
 month and weather. Try `cargo run --offline --example ambient`.
@@ -194,7 +194,7 @@ alone, and the lyric is the caption above the clock.
 The lines come from `assets/phrases.txt`, which Git ignores. Make it once with
 `python 05_build_phrase_pool.py`: it reads the Genius lyrics dataset (see
 `01_download_lyrics.py`) and keeps 200,000 rock and pop lines, one per song, of 3 to 12 words.
-Without that file the startup gradient fails and the timer shows why.
+Without that file the startup gradient fails and amber shows why.
 `amber::phrases` has the sampling and the request; `Generator::submit_moment`
 runs both requests on one worker.
 
@@ -208,9 +208,9 @@ the whole of it let the weather decide the gradient.
   so both services see your IP. `--location Lisbon` names a place instead (it
   is looked up at Open-Meteo), and `--no-weather` makes no lookups at all and
   describes the time alone.
-- The timer waits up to 3 seconds for the weather; the default gradient plays
+- Amber waits up to 3 seconds for the weather; the default gradient plays
   meanwhile. If the lookup fails or is slow, the description is the time alone.
-- While the timer runs, it refreshes the weather and moment every 5 minutes.
+- While amber runs, it refreshes the weather and moment every 5 minutes.
   It resolves the location once and reuses those coordinates for later forecasts.
 - Only the description goes to Jev. The place's name never does.
 - Day parts follow the sun when the forecast has sunrise and sunset (dawn,
@@ -230,7 +230,7 @@ API references:
 
 ## Logs
 
-Every run of `timer`, `jev`, or `amber` writes to a new directory,
+Every run of `amber`, `jev`, or `gradient` writes to a new directory,
 `logs/run-<timestamp>-<pid>/`, and prints its path when it exits. Nothing is
 logged to the terminal. A file appears when its first line is written.
 
@@ -240,8 +240,8 @@ logged to the terminal. A file appears when its first line is written.
 | `tasks.log` | task list, Todoist, task picker |
 | `audio.log` | audio capture and analysis |
 | `focus.log` | focus checks, decisions, overlay |
-| `timer.log` | clock phases, alarm, startup options, shutdown |
+| `amber.log` | clock phases, alarm, startup options, shutdown |
 
-The level is `info`. `--debug` (accepted by `timer`, `jev`, and `amber`) makes it
+The level is `info`. `--debug` (accepted by `amber`, `jev`, and `gradient`) makes it
 `debug` for every file. `RUST_LOG` adds to either, for example
 `RUST_LOG=amber::audio=trace` for one part. API keys and tokens are never logged.

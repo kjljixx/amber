@@ -8,9 +8,9 @@ A Rust terminal app built with Ratatui and Crossterm.
 cargo run
 ```
 
-This starts the pomodoro timer. The gradient viewer is `cargo run --bin amber`.
+This starts `amber`: the home clock and the pomodoro. The gradient viewer is `cargo run --bin gradient`.
 
-Press `q`, `Esc`, or `Ctrl+C` to quit. The app restores the terminal on exit.
+Press `Ctrl+C` to quit `amber` (`q` and `Esc` never quit it); the gradient viewer also quits with `q` or `Esc`. The app restores the terminal on exit.
 
 The preview displays a fixed half-block test pattern: cyan on the upper half
 and amber on the lower half of every cell. It resizes with the terminal and

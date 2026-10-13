@@ -161,7 +161,7 @@ pale text fades over light regions. To change the text, build a new `Digits`.
 To draw other translucent shapes the same way, `blend_samples(buffer, area,
 color, alpha, covered)` blends a color over whichever half-block samples
 `covered(column, row)` selects, where `row` counts two samples per terminal row.
-`Digits` is built on it, and `src/bin/timer.rs` uses it for its progress bars.
+`Digits` is built on it, and `src/main.rs` uses it for its progress bars.
 
 The shapes are the `glyph()` table in `src/digits.rs`. `tools/digit-editor.html`
 is a standalone browser editor for them, with a live preview and an export in

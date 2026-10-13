@@ -7,11 +7,11 @@
 //!
 //! | File | Parts |
 //! |---|---|
-//! | `gradient.log` | `ambient`, `phrases`, `generation`, `scene`, `recipe`, `view`, `jev`, `amber` |
+//! | `gradient.log` | `ambient`, `phrases`, `generation`, `scene`, `recipe`, `view`, `jev`, `gradient` |
 //! | `tasks.log` | `tasks`, `picker` |
 //! | `audio.log` | `audio` |
 //! | `focus.log` | `focus`, `focus_overlay` |
-//! | `timer.log` | `timer`, `alarm` |
+//! | `amber.log` | `amber` itself, `alarm` |
 //!
 //! Files are made when something is first written to them. The level is `info`;
 //! `--debug` (see [`take_debug_flag`]) makes it `debug`, and `RUST_LOG` can
@@ -48,7 +48,7 @@ pub enum Channel {
     Tasks,
     Audio,
     Focus,
-    Timer,
+    App,
 }
 
 impl Channel {
@@ -57,7 +57,7 @@ impl Channel {
         Channel::Tasks,
         Channel::Audio,
         Channel::Focus,
-        Channel::Timer,
+        Channel::App,
     ];
 
     pub fn file_name(self) -> &'static str {
@@ -66,25 +66,22 @@ impl Channel {
             Channel::Tasks => "tasks.log",
             Channel::Audio => "audio.log",
             Channel::Focus => "focus.log",
-            Channel::Timer => "timer.log",
+            Channel::App => "amber.log",
         }
     }
 
     /// The channel for a `tracing` target, which is a module path such as
-    /// `amber::focus` (library) or `timer::alarm` (a module of the timer).
-    /// Targets of other crates have none and are not written.
+    /// `amber::focus` (library) or `amber::alarm` (a module of the `amber`
+    /// binary, which shares its name with the library). Targets of other crates
+    /// have none and are not written.
     pub fn of(target: &str) -> Option<Self> {
         let mut parts = target.split("::");
         match (parts.next(), parts.next()) {
-            (Some("amber"), Some("tasks")) | (Some("timer"), Some("picker")) => {
-                Some(Channel::Tasks)
-            }
+            (Some("amber"), Some("tasks" | "picker")) => Some(Channel::Tasks),
             (Some("amber"), Some("audio")) => Some(Channel::Audio),
-            (Some("amber"), Some("focus")) | (Some("timer"), Some("focus_overlay")) => {
-                Some(Channel::Focus)
-            }
-            (Some("timer"), _) => Some(Channel::Timer),
-            (Some("amber" | "jev"), _) => Some(Channel::Gradient),
+            (Some("amber"), Some("focus" | "focus_overlay")) => Some(Channel::Focus),
+            (Some("amber"), None | Some("alarm" | "speed_control")) => Some(Channel::App),
+            (Some("amber" | "jev" | "gradient"), _) => Some(Channel::Gradient),
             _ => None,
         }
     }
@@ -205,15 +202,15 @@ mod tests {
             ("amber::ambient", Channel::Gradient),
             ("amber::generation::client", Channel::Gradient),
             ("amber::view", Channel::Gradient),
-            ("amber", Channel::Gradient),
+            ("amber", Channel::App),
             ("jev", Channel::Gradient),
+            ("gradient", Channel::Gradient),
             ("amber::tasks::todoist", Channel::Tasks),
-            ("timer::picker", Channel::Tasks),
+            ("amber::picker", Channel::Tasks),
             ("amber::audio", Channel::Audio),
             ("amber::focus", Channel::Focus),
-            ("timer::focus_overlay", Channel::Focus),
-            ("timer", Channel::Timer),
-            ("timer::alarm", Channel::Timer),
+            ("amber::focus_overlay", Channel::Focus),
+            ("amber::alarm", Channel::App),
         ] {
             assert_eq!(Channel::of(target), Some(channel), "{target}");
         }
