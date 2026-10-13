@@ -69,7 +69,7 @@ use amber::{
     Digits, Excitement, GradientView, Reactivity,
     ambient::{Ambient, Moment, Place},
     audio::Source,
-    blend_samples,
+    blend_samples, darken_around,
     generation::{GeneratedGradient, Generator},
     presets,
     tasks::{self, Loader, todoist::Todoist},
@@ -118,6 +118,11 @@ const WORK_PERIODS: u8 = 4;
 const ALPHA: f32 = 0.6;
 /// Opacity of the unlit part of the bars.
 const DIM_ALPHA: f32 = 0.25;
+/// How far the darkening around the digits and bars reaches, in half-block
+/// samples, and the lightest the gradient may be under them (OKLab, 0 to 1).
+/// A white text at `ALPHA` is then at least 0.23 lighter than what is behind it.
+const HALO_RADIUS: u16 = 6;
+const HALO_LIMIT: f32 = 0.8;
 /// Gradient animation rate before Jev suggests one, in radians per second.
 const BASE_SPEED: f64 = 0.15;
 /// Speed steps above 1x at the start: each is a factor of the square root of
@@ -139,6 +144,7 @@ const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
 /// past each end of the text.
 const SCRIM_ALPHA: f32 = 0.3;
 const SCRIM_PADDING: u16 = 2;
+const PURE_WHITE: &str = "pure white";
 const WHITE: [u8; 3] = [255, 255, 255];
 const PAUSED_ROSE: [u8; 3] = [242, 139, 130];
 const BREAK_MINT: [u8; 3] = [135, 221, 189];
@@ -309,17 +315,21 @@ impl Bars {
         })
     }
 
-    /// `Some(true)` for a lit sample of a bar, `Some(false)` for an unlit one,
-    /// `None` when the sample is not part of a bar.
-    fn lit(&self, fill: &[f32; 4], column: u32, row: u32) -> Option<bool> {
+    /// Which bar the sample belongs to, if any.
+    fn segment_at(&self, column: u32, row: u32) -> Option<usize> {
         if !(self.top..self.bottom).contains(&row) {
             return None;
         }
-        let (index, &(left, right)) = self
-            .segments
+        self.segments
             .iter()
-            .enumerate()
-            .find(|(_, (left, right))| (*left..*right).contains(&column))?;
+            .position(|(left, right)| (*left..*right).contains(&column))
+    }
+
+    /// `Some(true)` for a lit sample of a bar, `Some(false)` for an unlit one,
+    /// `None` when the sample is not part of a bar.
+    fn lit(&self, fill: &[f32; 4], column: u32, row: u32) -> Option<bool> {
+        let index = self.segment_at(column, row)?;
+        let (left, right) = self.segments[index];
         let filled = (fill[index] * (right - left) as f32).round() as u32;
         Some(column - left < filled)
     }
@@ -337,6 +347,19 @@ fn draw_cycle(buffer: &mut Buffer, area: Rect, phase: Phase, progress: f32) {
     };
     blend_samples(buffer, area, WHITE, ALPHA, samples(true));
     blend_samples(buffer, area, WHITE, DIM_ALPHA, samples(false));
+}
+
+/// Darken the gradient around the digits and the bars wherever it is too
+/// pale for them to stand out, softly, and only as far as needed.
+fn draw_halo(buffer: &mut Buffer, area: Rect, text: &mut Digits) -> usize {
+    let bars = Bars::layout(area.width, area.height);
+    let digits = text.covered(area);
+    darken_around(buffer, area, HALO_RADIUS, HALO_LIMIT, |column, row| {
+        digits(column, row)
+            || bars
+                .as_ref()
+                .is_some_and(|bars| bars.segment_at(column.into(), row.into()).is_some())
+    })
 }
 
 /// The text box for describing a gradient, and the description behind the
@@ -745,6 +768,8 @@ struct Options {
     /// Check screenshots against the selected task, every five seconds after
     /// an off-task result and every twenty seconds otherwise.
     focus_check: bool,
+    /// Temporary, for testing contrast: start from the description "pure white".
+    pure_white: bool,
 }
 
 impl Default for Options {
@@ -758,13 +783,14 @@ impl Default for Options {
             todoist: true,
             todoist_filter: None,
             focus_check: cfg!(feature = "focus-check"),
+            pure_white: false,
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---no-todoist | --todoist-filter <query> | --no-focus-check | --debug | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --no-focus-check | --pure-white | --debug | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -786,6 +812,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--alarm-test" => return Ok(Command::AlarmTest),
             "--list-audio" => return Ok(Command::ListAudio),
             "--no-focus-check" => options.focus_check = false,
+            "--pure-white" => options.pure_white = true,
             "--no-weather" => options.place = None,
             "--no-audio" => options.listen = false,
             "--location" => {
@@ -950,8 +977,15 @@ fn run() -> io::Result<()> {
         log_directory = %log_directory.display(),
         "timer started"
     );
+    info!(
+        halo_radius = HALO_RADIUS,
+        halo_limit = HALO_LIMIT,
+        "darkening around the digits and bars"
+    );
     let start = Instant::now();
     let mut phases_completed = 0u32;
+    let mut frames_drawn = 0u32;
+    let mut frames_darkened = 0u32;
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
     let mut speed = SpeedControl::new(BASE_SPEED);
@@ -987,6 +1021,13 @@ fn run() -> io::Result<()> {
     }
     // The moment, which goes to Jev with every task.
     let mut moment: Option<Moment> = None;
+    if options.pure_white {
+        info!("starting from the description \"pure white\"");
+        generator.submit(PURE_WHITE);
+        if generator.is_pending() {
+            task.started_for(PURE_WHITE.into());
+        }
+    }
     let mut picker: Option<Picker> = None;
     let mut loader = match (&options.tasks, options.todoist) {
         (Some(path), _) => Some(Loader::new(tasks::Source::Markdown(path.clone()))),
@@ -1021,7 +1062,13 @@ fn run() -> io::Result<()> {
             let now = Instant::now();
             if clock.advance(now) {
                 phases_completed += 1;
-                info!(phase = ?clock.phase(), phases_completed, "phase changed");
+                info!(
+                    phase = ?clock.phase(),
+                    phases_completed,
+                    frames_drawn,
+                    frames_darkened,
+                    "phase changed"
+                );
                 announce(clock.phase());
             }
             #[cfg(feature = "focus-check")]
@@ -1212,6 +1259,10 @@ fn run() -> io::Result<()> {
                     let area = frame.area();
                     // The gradient first, then the time and the bars over it.
                     background.render(frame, area);
+                    frames_drawn += 1;
+                    if draw_halo(frame.buffer_mut(), area, &mut text) > 0 {
+                        frames_darkened += 1;
+                    }
                     frame.render_widget(&mut text, area);
                     draw_cycle(frame.buffer_mut(), area, clock.phase(), clock.progress(now));
                     // The task goes over everything else, above the digits.
@@ -1678,6 +1729,28 @@ mod tests {
     }
 
     #[test]
+    fn the_halo_keeps_the_digits_and_bars_apart_from_a_white_gradient() {
+        let (width, rows) = (100, 30);
+        let area = Rect::new(0, 0, width, rows);
+        let white = Color::Rgb(255, 255, 255);
+        let mut buffer = Buffer::empty(area);
+        for cell in &mut buffer.content {
+            cell.set_char('▀').set_fg(white).set_bg(white);
+        }
+        let mut text = digits("25:00").unwrap();
+        assert!(draw_halo(&mut buffer, area, &mut text) > 0);
+        let bars = Bars::layout(width, rows).unwrap();
+        let (left, _) = bars.segments[0];
+        let below_bar = &buffer[(left as u16, (bars.top / 2) as u16)];
+        assert_ne!(below_bar.fg, white);
+        let digits = text.bounds(area).unwrap();
+        let in_digits = &buffer[(digits.x + digits.width / 2, digits.y + digits.height / 2)];
+        assert_ne!(in_digits.fg, white);
+        // Far from both, the gradient is as it was.
+        assert_eq!(buffer[(0, 0)].fg, white);
+    }
+
+    #[test]
     fn drawing_the_bars_on_a_tiny_screen_does_nothing() {
         let (mut buffer, area) = grey_screen(30, 6);
         draw_cycle(&mut buffer, area, Phase::Work(1), 0.5);
@@ -1986,6 +2059,14 @@ mod tests {
         assert!(parse(&["--location", " "]).is_err());
         assert!(parse(&["--location="]).is_err());
         assert!(parse(&["--bogus"]).unwrap_err().contains("--bogus"));
+        assert_eq!(
+            parse(&["--pure-white"]),
+            Ok(Command::Clock(Options {
+                pure_white: true,
+                ..Options::default()
+            }))
+        );
+        assert!(parse(&["--pure-white=1"]).is_err());
     }
 
     #[test]

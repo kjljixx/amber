@@ -29,7 +29,7 @@ pub use color::Rgb;
 pub use digits::Digits;
 pub use gradient::{Point, PreparedGradient};
 pub use half_blocks::{HalfBlocks, Preview};
-pub use overlay::blend_samples;
+pub use overlay::{blend_samples, darken_around};
 pub use recipe::{CompiledRecipe, MotionStyle, Recipe};
 pub use scene::Scene;
 pub use view::{Excitement, GradientView, Playback, Reactivity, RenderStats};

@@ -192,6 +192,14 @@ impl Digits {
         })
     }
 
+    /// Whether the digits cover the sample at `(column, row)` when rendered
+    /// into `area`, with both counted from the area's top-left corner.
+    pub fn covered(&mut self, area: Rect) -> impl Fn(u16, u16) -> bool + '_ {
+        let rows = area.height.min(u16::MAX / 2);
+        let mask = self.mask(area.width, 2 * rows);
+        move |column, row| column < mask.width && row < mask.height && mask.at(column, row)
+    }
+
     /// The mask for a sample grid, rebuilt only when its size changes.
     fn mask(&mut self, width: u16, height: u16) -> &Mask {
         if self.mask.as_ref().map(Mask::size) != Some((width, height)) {
