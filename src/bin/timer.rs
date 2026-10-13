@@ -4,7 +4,7 @@
 //! The cycle is work, 5 minute break, three times over, then a fourth work
 //! period and a 20 minute break, and then it starts again.
 //!
-//! `cargo run --offline --bin timer`
+//! `cargo run --offline`
 //! Space: pause or resume the timer and the gradient | r: back to the start of
 //! the cycle, 25:00 | t: choose the task, in a fresh box (Enter takes it, Esc
 //! cancels) | Up/Down: gradient speed | q, Esc or Ctrl+C: quit
@@ -14,17 +14,22 @@
 //! above the clock until a new one replaces it. Typing in the box describes a
 //! task of your own.
 //!
-//! `--tasks list.md` gives `t` a list to choose from: the unfinished items of a
+//! `t` chooses from your Todoist account by default (see below).
+//! `--tasks list.md` gives it a list from a file instead: the unfinished items of a
 //! markdown file, such as `- [ ] write the report`, under whatever headings it
 //! has. What is typed narrows the list, Up and Down move through it, and Enter
 //! takes the highlighted row. The file is read again each time `t` is pressed.
 //!
-//! `--todoist` chooses from a Todoist account instead: all your active tasks,
+//! Todoist gives all your active tasks,
 //! soonest due first and then most urgent, with when each is due, its labels and
 //! its project's name at the right. It needs a personal API token (Todoist's
 //! settings, Integrations, Developer) as `TODOIST_API_TOKEN` in the environment
 //! or a `.env` file. `--todoist-filter "today | overdue"` reads only the tasks a
-//! Todoist filter matches. Todoist is only ever read, never changed.
+//! Todoist filter matches. `--no-todoist` turns it off. Todoist is only ever read,
+//! never changed. Without a token the timer still starts and says so.
+//!
+//! Sound from the machine moves the gradient from the start; `a` turns it off
+//! and on, and `--no-audio` starts with it off.
 //!
 //! The focus checker captures the primary screen every 20 seconds while a
 //! chosen task is active during unpaused work phases. It pauses with the timer
@@ -47,7 +52,7 @@
 //!
 //! When a phase ends, a chime plays and a desktop notification appears: a
 //! climbing one when a work period ends, a falling one when a break does.
-//! `cargo run --offline --bin timer -- --alarm-test` plays both now, to check
+//! `cargo run --offline -- --alarm-test` plays both now, to check
 //! your sound and notification settings.
 //!
 //! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
@@ -728,14 +733,14 @@ struct Options {
     /// Start from a description of this moment and this place's weather; with no
     /// place, of the time alone.
     place: Option<Place>,
-    /// Listen for sound from the start, not only once `a` is pressed.
+    /// Listen for sound from the start; `a` turns it off or on.
     listen: bool,
     source: Source,
     sensitivity: f32,
     /// A markdown file of tasks to choose from.
     tasks: Option<PathBuf>,
     /// Choose from the tasks in a Todoist account, by this filter or its usual
-    /// one, instead.
+    /// one, unless a markdown file of tasks is named.
     todoist: bool,
     todoist_filter: Option<String>,
     /// Check screenshots against the selected task, every five seconds after
@@ -749,11 +754,11 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             place: Some(Place::Here),
-            listen: false,
+            listen: true,
             source: Source::System,
             sensitivity: 1.0,
             tasks: None,
-            todoist: false,
+            todoist: true,
             todoist_filter: None,
             focus_check: cfg!(feature = "focus-check"),
             focus_debug: false,
@@ -761,13 +766,14 @@ impl Default for Options {
     }
 }
 
-const USAGE: &str = "options: --location <city> | --no-weather | --audio | \
+const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---todoist | --todoist-filter <query> | --no-focus-check | --focus-debug | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --no-focus-check | --focus-debug | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
     let mut options = Options::default();
+    let mut todoist_requested = false;
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
             Some((name, value)) => (name.to_string(), Some(value.to_string())),
@@ -789,7 +795,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
                 options.focus_check = true;
             }
             "--no-weather" => options.place = None,
-            "--audio" => options.listen = true,
+            "--no-audio" => options.listen = false,
             "--location" => {
                 options.place = Some(Place::Named(value("a place, such as --location Lisbon")?));
             }
@@ -801,9 +807,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
                     device => Source::Named(device.to_string()),
                 };
             }
-            "--todoist" => options.todoist = true,
+            "--no-todoist" => options.todoist = false,
+            "--todoist" => {
+                options.todoist = true;
+                todoist_requested = true;
+            }
             "--todoist-filter" => {
                 options.todoist = true;
+                todoist_requested = true;
                 options.todoist_filter =
                     Some(value("a Todoist filter, such as \"today | overdue\"")?);
             }
@@ -828,8 +839,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             return Err(format!("{name} takes no value; {USAGE}"));
         }
     }
-    if options.tasks.is_some() && options.todoist {
-        return Err("--tasks and --todoist both choose where tasks come from; use one".into());
+    if options.tasks.is_some() {
+        if todoist_requested {
+            return Err("--tasks and --todoist both choose where tasks come from; use one".into());
+        }
+        options.todoist = false;
     }
     if options.focus_debug {
         options.focus_check = true;
@@ -980,9 +994,16 @@ fn run() -> io::Result<()> {
     let mut loader = match (&options.tasks, options.todoist) {
         (Some(path), _) => Some(Loader::new(tasks::Source::Markdown(path.clone()))),
         (None, true) => {
-            let todoist = Todoist::from_env(Path::new(".env"), options.todoist_filter.as_deref())
-                .map_err(io::Error::other)?;
-            Some(Loader::new(tasks::Source::Todoist(todoist)))
+            match Todoist::from_env(Path::new(".env"), options.todoist_filter.as_deref()) {
+                Ok(todoist) => Some(Loader::new(tasks::Source::Todoist(todoist))),
+                Err(message) => {
+                    notice = Some(Notice {
+                        text: format!("Todoist: {message}"),
+                        until: start + NOTICE,
+                    });
+                    None
+                }
+            }
         }
         (None, false) => None,
     };
@@ -2007,15 +2028,19 @@ mod tests {
                 ..Options::default()
             }))
         };
-        // Sound is off unless asked for.
+        // Sound is on unless turned off.
+        assert!(Options::default().listen);
         assert_eq!(
             parse(&["--sensitivity", "2"]),
+            listening(Source::System, 2.0)
+        );
+        assert_eq!(
+            parse(&["--no-audio"]),
             Ok(Command::Clock(Options {
-                sensitivity: 2.0,
+                listen: false,
                 ..Options::default()
             }))
         );
-        assert_eq!(parse(&["--audio"]), listening(Source::System, 1.0));
         assert_eq!(
             parse(&["--audio-from", "mic"]),
             listening(Source::Microphone, 1.0)
@@ -2035,7 +2060,7 @@ mod tests {
             &["--sensitivity", "0"],
             &["--sensitivity=-1"],
             &["--sensitivity", "NaN"],
-            &["--audio=on"],
+            &["--no-audio=on"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
@@ -2047,6 +2072,7 @@ mod tests {
         let with = |path: &str| {
             Ok(Command::Clock(Options {
                 tasks: Some(PathBuf::from(path)),
+                todoist: false,
                 ..Options::default()
             }))
         };
@@ -2093,7 +2119,16 @@ mod tests {
                 ..Options::default()
             }))
         };
+        // Todoist is where tasks come from unless a file or --no-todoist says otherwise.
+        assert!(Options::default().todoist);
         assert_eq!(parse(&["--todoist"]), todoist(None));
+        assert_eq!(
+            parse(&["--no-todoist"]),
+            Ok(Command::Clock(Options {
+                todoist: false,
+                ..Options::default()
+            }))
+        );
         assert_eq!(
             parse(&["--todoist-filter", "#Work & p1"]),
             todoist(Some("#Work & p1"))

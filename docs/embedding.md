@@ -106,7 +106,8 @@ untested. `Source::Microphone` and `Source::Named("BlackHole")` choose other
 devices. Sound is analyzed as it arrives and never stored or sent anywhere.
 
 `cargo run --offline --example listen` prints what it hears: level, activity, tone and pulse. In the timer, `a` turns it on or off, and
-`--audio`, `--audio-from`, `--sensitivity` and `--list-audio` choose how.
+`--no-audio`, `--audio-from`, `--sensitivity` and `--list-audio` choose how.
+Sound is on from the start.
 
 ## Layering
 
@@ -167,7 +168,7 @@ is a standalone browser editor for them, with a live preview and an export in
 the same form.
 
 Run `cargo run --offline --example digits -- 25:47 0.85` to try it, or
-`cargo run --offline --bin timer` for a pomodoro clock built on it.
+`cargo run --offline` for a pomodoro clock built on it.
 
 Run `cargo run --offline --example background` for a complete host application
 with a solid panel over the gradient. Space pauses; `q` exits.

@@ -2,7 +2,7 @@
 name = "amber"
 version = "0.1.0"
 edition = "2024"
-default-run = "amber"
+default-run = "timer"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

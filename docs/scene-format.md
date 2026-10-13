@@ -6,8 +6,8 @@ produces an ordinary [recipe](recipe-format.md): the renderer only ever sees
 points, and each element is a small generator that emits some of them.
 
 ```sh
-cargo run --offline -- --scene desert_hills      # a bundled scene
-cargo run --offline -- --scene my-scene.json     # your own file
+cargo run --offline --bin amber -- --scene desert_hills      # a bundled scene
+cargo run --offline --bin amber -- --scene my-scene.json     # your own file
 ```
 
 `--scene` takes a file path if one exists, otherwise a bundled scene name:

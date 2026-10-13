@@ -14,7 +14,7 @@ Generate and save a recipe without entering the TUI:
 
 ```sh
 cargo run --offline --bin jev -- --prompt "glacier ice" --output glacier.json
-cargo run --offline -- --recipe glacier.json
+cargo run --offline --bin amber -- --recipe glacier.json
 ```
 
 Saving refuses to overwrite an existing file. Recipe files contain no credentials.
@@ -85,7 +85,7 @@ and `JEV_MODEL` from the environment or a `.env` file in the working directory.
 It ignores a second request while one is in flight and remembers the last 32
 answers, so repeating a description costs nothing.
 
-`cargo run --offline --bin timer` is a pomodoro clock that uses it: press `t`
+`cargo run --offline` is a pomodoro clock that uses it: press `t`
 to choose the task, `Up`/`Down` to change the gradient's speed. Gradients play
 at 8x the rate Jev suggests by default. Jev is told the task and the moment (see
 below), and once it has made a gradient the task stays above the clock until a
@@ -97,7 +97,7 @@ the timer is paused or during Pomodoro breaks, then starts a fresh 20-second
 delay when work resumes:
 
 ```sh
-cargo run --offline --bin timer
+cargo run --offline
 ```
 
 Pass `--no-focus-check` to disable it for a run.
@@ -124,7 +124,7 @@ can show the overlay again for eight seconds if it has already closed. The
 transparent overlay window does not switch to a separate fullscreen Space.
 Choosing a new task starts a new sequence. To preview the overlay directly,
 run
-`cargo run --offline --bin timer -- --focus-overlay
+`cargo run --offline -- --focus-overlay
 "Let's get back on track"`; it closes after eight seconds, or press Enter in
 that terminal to close it sooner.
 `FOCUS_MODEL` can override the default
@@ -153,8 +153,9 @@ in place of the rows.
 
 ### From Todoist
 
-`--todoist` chooses from your Todoist account instead of a file (`--tasks` and
-`--todoist` are alternatives). Make a personal API token in Todoist's settings
+The timer chooses from your Todoist account by default; `--tasks` names a file
+instead, and `--no-todoist` turns the list off (`--tasks` and `--todoist` are
+alternatives). Without a token the timer still starts and shows a notice. Make a personal API token in Todoist's settings
 under Integrations, then Developer, and set `TODOIST_API_TOKEN` in the
 environment or the local `.env` file, as for the Jev key. `.env.example` has the
 line.
