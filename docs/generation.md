@@ -105,7 +105,7 @@ Pass `--no-focus-check` to disable it for a run.
 Focus checks are logged to `logs/run-<timestamp>-<pid>/focus.log` (see
 [Logs](#logs)). At the default `info` level each check logs its schedule,
 screenshot size, model status and timing, decision, streak, notification, and
-overlay events. Run with `RUST_LOG=amber::focus=debug` to also save each
+overlay events. Run with `--debug` to also save each
 screenshot as `focus/check-NNNN.jpg` and the raw model response as
 `focus/check-NNNN-response.json`, and to log the prompt. These files can contain
 your screen contents, task text, and model response; `logs/` is ignored by Git.
@@ -242,6 +242,6 @@ logged to the terminal. A file appears when its first line is written.
 | `focus.log` | focus checks, decisions, overlay |
 | `timer.log` | clock phases, alarm, startup options, shutdown |
 
-The level is `info`. `RUST_LOG` adds to it, for example
-`RUST_LOG=debug` or `RUST_LOG=amber::focus=debug,amber::audio=trace`. API keys
-and tokens are never logged.
+The level is `info`. `--debug` (accepted by `timer`, `jev`, and `amber`) makes it
+`debug` for every file. `RUST_LOG` adds to either, for example
+`RUST_LOG=amber::audio=trace` for one part. API keys and tokens are never logged.

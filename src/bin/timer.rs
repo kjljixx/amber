@@ -751,7 +751,7 @@ impl Default for Options {
 
 const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---no-todoist | --todoist-filter <query> | --no-focus-check | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --no-focus-check | --debug | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -925,12 +925,13 @@ struct Notice {
 }
 
 fn run() -> io::Result<()> {
-    let options = match parse_args(std::env::args().skip(1)).map_err(io::Error::other)? {
+    let (debug, args) = amber::log::take_debug_flag(std::env::args().skip(1));
+    let options = match parse_args(args).map_err(io::Error::other)? {
         Command::AlarmTest => return alarm_test(),
         Command::ListAudio => return list_audio(),
         Command::Clock(options) => options,
     };
-    let log_directory = amber::log::init()?;
+    let log_directory = amber::log::init(debug)?;
     info!(
         ?options,
         log_directory = %log_directory.display(),

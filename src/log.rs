@@ -14,10 +14,12 @@
 //! | `timer.log` | `timer`, `alarm` |
 //!
 //! Files are made when something is first written to them. The level is `info`;
-//! `RUST_LOG` changes it, for example `RUST_LOG=amber::focus=debug`. At `debug`
+//! `--debug` (see [`take_debug_flag`]) makes it `debug`, and `RUST_LOG` can
+//! change single parts, for example `RUST_LOG=amber::focus=trace`. At `debug`
 //! the focus checker also keeps each screenshot and model response, see
 //! [`attach`].
 use std::{
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -35,6 +37,8 @@ use tracing_subscriber::{
 
 const BASE_DIRECTORY: &str = "logs";
 const DEFAULT_LEVEL: &str = "info";
+const DEBUG_LEVEL: &str = "debug";
+pub const DEBUG_FLAG: &str = "--debug";
 
 static RUN_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 
@@ -122,17 +126,27 @@ impl Write for Sink {
     }
 }
 
-/// The filter for a level setting: `info` everywhere, then what `RUST_LOG` says.
-fn filter(setting: Option<&str>) -> Result<EnvFilter, String> {
+/// Remove [`DEBUG_FLAG`] from the arguments of a binary, so its own parser does
+/// not see it, and say whether it was there.
+pub fn take_debug_flag<T: AsRef<OsStr>>(args: impl IntoIterator<Item = T>) -> (bool, Vec<T>) {
+    let (flags, rest): (Vec<T>, Vec<T>) =
+        args.into_iter().partition(|arg| arg.as_ref() == DEBUG_FLAG);
+    (!flags.is_empty(), rest)
+}
+
+/// The filter for a level setting: `info` everywhere (`debug` with the flag),
+/// then what `RUST_LOG` says.
+fn filter(setting: Option<&str>, debug: bool) -> Result<EnvFilter, String> {
+    let level = if debug { DEBUG_LEVEL } else { DEFAULT_LEVEL };
     let directives = match setting.map(str::trim).filter(|setting| !setting.is_empty()) {
-        Some(setting) => format!("{DEFAULT_LEVEL},{setting}"),
-        None => DEFAULT_LEVEL.to_owned(),
+        Some(setting) => format!("{level},{setting}"),
+        None => level.to_owned(),
     };
     EnvFilter::try_new(&directives).map_err(|error| format!("RUST_LOG is not valid: {error}"))
 }
 
 /// Start logging into a new directory under `logs/` and return it. Call once.
-pub fn init() -> io::Result<PathBuf> {
+pub fn init(debug: bool) -> io::Result<PathBuf> {
     let setting = std::env::var("RUST_LOG").ok();
     let directory = Path::new(BASE_DIRECTORY).join(format!(
         "run-{}-{}",
@@ -145,7 +159,7 @@ pub fn init() -> io::Result<PathBuf> {
                 path: directory.join(channel.file_name()),
                 file: Mutex::new(None),
             }));
-            let filter = filter(setting.as_deref())
+            let filter = filter(setting.as_deref(), debug)
                 .map_err(io::Error::other)?
                 .and(filter_fn(move |metadata| {
                     Channel::of(metadata.target()) == Some(channel)
@@ -208,9 +222,18 @@ mod tests {
 
     #[test]
     fn the_level_is_info_unless_the_setting_says_more() {
-        assert!(filter(None).is_ok());
-        assert!(filter(Some("amber::focus=debug")).is_ok());
-        assert!(filter(Some("  ")).is_ok());
-        assert!(filter(Some("amber::focus=loud")).is_err());
+        assert!(filter(None, false).is_ok());
+        assert!(filter(Some("amber::focus=trace"), true).is_ok());
+        assert!(filter(Some("  "), false).is_ok());
+        assert!(filter(Some("amber::focus=loud"), false).is_err());
+    }
+
+    #[test]
+    fn the_debug_flag_is_removed_from_the_arguments() {
+        assert_eq!(
+            take_debug_flag(["--prompt", "--debug", "ice"]),
+            (true, vec!["--prompt", "ice"])
+        );
+        assert_eq!(take_debug_flag(["ice"]), (false, vec!["ice"]));
     }
 }

@@ -43,7 +43,8 @@ fn load_scene(name: &str) -> io::Result<Recipe> {
 }
 
 fn run() -> io::Result<()> {
-    let command = cli::parse(std::env::args_os().skip(1)).map_err(|message| {
+    let (debug, args) = amber::log::take_debug_flag(std::env::args_os().skip(1));
+    let command = cli::parse(args).map_err(|message| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{message}\n{}", cli::USAGE),
@@ -53,7 +54,7 @@ fn run() -> io::Result<()> {
         println!("{}", cli::USAGE);
         return Ok(());
     };
-    let log_directory = amber::log::init()?;
+    let log_directory = amber::log::init(debug)?;
     info!(
         recipe = ?recipe,
         scene = ?scene,

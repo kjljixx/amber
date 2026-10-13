@@ -97,4 +97,4 @@ Every 20 seconds in a work phase: screenshot → Luna Decisions → `Event::OffT
 `amber::log` routes `tracing` events to five files by module path:
 `gradient.log`, `tasks.log`, `audio.log`, `focus.log`, and `timer.log`, in
 `logs/run-<timestamp>-<pid>/`. Each binary calls `log::init()` once. See
-`docs/generation.md` for the file contents and `RUST_LOG`.
+`docs/generation.md` for the file contents, `--debug`, and `RUST_LOG`.

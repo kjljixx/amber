@@ -41,7 +41,7 @@ fn synchronized_draw<W: io::Write>(
     finish
 }
 
-const HELP: &str = "Usage: jev [--prompt TEXT] [--output FILE]\n\nWithout --output, opens an interactive gradient generator.\nWith --output, generates a JSON recipe and exits. Requires --prompt.\n\nEnter: generate | Ctrl+P: pause | Up/Down: speed | Esc / Ctrl+C: quit\nReads OPENROUTER_API_KEY and optional JEV_MODEL from the environment or .env.";
+const HELP: &str = "Usage: jev [--prompt TEXT] [--output FILE] [--debug]\n\nWithout --output, opens an interactive gradient generator.\nWith --output, generates a JSON recipe and exits. Requires --prompt.\n\nEnter: generate | Ctrl+P: pause | Up/Down: speed | Esc / Ctrl+C: quit\n--debug logs in more detail (see docs/generation.md).\nReads OPENROUTER_API_KEY and optional JEV_MODEL from the environment or .env.";
 
 #[derive(Default)]
 struct Options {
@@ -105,12 +105,13 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> io::Result<()> {
-    let options = options(std::env::args_os().skip(1))?;
+    let (debug, args) = amber::log::take_debug_flag(std::env::args_os().skip(1));
+    let options = options(args)?;
     if options.help {
         println!("{HELP}");
         return Ok(());
     }
-    let log_directory = amber::log::init()?;
+    let log_directory = amber::log::init(debug)?;
     info!(
         interactive = options.output.is_none(),
         prompt_chars = options.prompt.chars().count(),
