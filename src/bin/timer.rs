@@ -123,6 +123,7 @@ const DIM_ALPHA: f32 = 0.25;
 /// A white text at `ALPHA` is then at least 0.23 lighter than what is behind it.
 const HALO_RADIUS: u16 = 6;
 const HALO_LIMIT: f32 = 0.8;
+const STRONG_HALO_LIMIT: f32 = 0.65;
 /// Gradient animation rate before Jev suggests one, in radians per second.
 const BASE_SPEED: f64 = 0.15;
 /// Speed steps above 1x at the start: each is a factor of the square root of
@@ -146,8 +147,8 @@ const SCRIM_ALPHA: f32 = 0.3;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 const WHITE: [u8; 3] = [255, 255, 255];
-const PAUSED_ROSE: [u8; 3] = [242, 139, 130];
-const BREAK_MINT: [u8; 3] = [135, 221, 189];
+const PAUSED_ROSE: [u8; 3] = [255, 150, 150];
+const BREAK_MINT: [u8; 3] = [150, 255, 150];
 const BLACK: [u8; 3] = [0, 0, 0];
 
 /// One stretch of the cycle. The number says which work period it is in or
@@ -351,15 +352,19 @@ fn draw_cycle(buffer: &mut Buffer, area: Rect, phase: Phase, progress: f32) {
 
 /// Darken the gradient around the digits and the bars wherever it is too
 /// pale for them to stand out, softly, and only as far as needed.
-fn draw_halo(buffer: &mut Buffer, area: Rect, text: &mut Digits) -> usize {
+fn draw_halo(buffer: &mut Buffer, area: Rect, text: &mut Digits, stronger_halo: bool) -> usize {
     let bars = Bars::layout(area.width, area.height);
     let digits = text.covered(area);
-    darken_around(buffer, area, HALO_RADIUS, HALO_LIMIT, |column, row| {
+    let halo_limit = if stronger_halo {STRONG_HALO_LIMIT} else {HALO_LIMIT};
+    let mut darkened_samples = darken_around(buffer, area, HALO_RADIUS, halo_limit, |column, row| {
         digits(column, row)
-            || bars
+    });
+    darkened_samples += darken_around(buffer, area, HALO_RADIUS, HALO_LIMIT, |column, row| {
+        bars
                 .as_ref()
                 .is_some_and(|bars| bars.segment_at(column.into(), row.into()).is_some())
-    })
+    });
+    return darkened_samples;
 }
 
 /// The text box for describing a gradient, and the description behind the
@@ -1260,7 +1265,7 @@ fn run() -> io::Result<()> {
                     // The gradient first, then the time and the bars over it.
                     background.render(frame, area);
                     frames_drawn += 1;
-                    if draw_halo(frame.buffer_mut(), area, &mut text) > 0 {
+                    if draw_halo(frame.buffer_mut(), area, &mut text, matches!(clock.phase(), Phase::Break(_)) || clock.is_paused()) > 0 {
                         frames_darkened += 1;
                     }
                     frame.render_widget(&mut text, area);
