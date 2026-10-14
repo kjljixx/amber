@@ -93,6 +93,10 @@ impl CompiledRecipe {
         self.warp.seed()
     }
 
+    pub(crate) fn pulses_from_center(&self) -> bool {
+        self.motion_style == MotionStyle::Glow
+    }
+
     pub fn prepare(
         &self,
         aspect: f32,

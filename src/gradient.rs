@@ -313,10 +313,16 @@ impl PreparedGradient {
     }
 
     /// Add a localized, slowly wandering response to a transient sound pulse.
-    pub(crate) fn with_local_pulse(mut self, pulse: f32, travel: f64, seed: u16) -> Self {
+    pub(crate) fn with_local_pulse(
+        mut self,
+        pulse: f32,
+        travel: f64,
+        seed: u16,
+        swell: bool,
+    ) -> Self {
         self.warp = self
             .warp
-            .with_local_pulse(pulse, travel, seed, self.x_scale);
+            .with_local_pulse(pulse, travel, seed, self.x_scale, swell);
         self
     }
 

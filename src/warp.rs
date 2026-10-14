@@ -647,15 +647,26 @@ pub struct Warp {
 }
 
 impl Warp {
-    /// Add a soft, spatially local displacement for an audio pulse.
+    /// Add a soft, spatially local displacement for an audio pulse. A `swell`
+    /// pulse sits on the image center and pushes the picture outward, so a
+    /// central glow grows on a hit instead of being dragged off-center.
     pub(crate) fn with_local_pulse(
         mut self,
         pulse: f32,
         travel: f64,
         seed: u16,
         x_scale: f32,
+        swell: bool,
     ) -> Self {
         if pulse <= 0.0 {
+            return self;
+        }
+        if swell {
+            self.steps.push(Step::Pulse {
+                center: [0.0, 0.0],
+                amplitude: -0.055 * pulse.clamp(0.0, 1.5),
+                radius: 0.28,
+            });
             return self;
         }
         let time = (travel * 0.035) as f32;

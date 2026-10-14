@@ -350,6 +350,7 @@ impl GradientView {
                     self.excitement.pulse * self.reactivity.warp,
                     self.animation.travel(),
                     self.recipe.seed(),
+                    self.recipe.pulses_from_center(),
                 );
             }
             self.preview
