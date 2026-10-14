@@ -1,9 +1,13 @@
 //! Prints what the audio analysis hears (level, how much is changing, tone and
 //! pulse), for tuning and for checking that capture works.
 //!
-//! `cargo run --offline --example listen -- [system|mic|DEVICE] [seconds] [sensitivity]`
+//! `cargo run --offline --example listen -- [system|mic|DEVICE] [seconds] [sensitivity] [--save clip.wav]`
+//!
+//! `--save` also writes the sound it hears to a WAV file, to replay with the
+//! `trace` example.
 //! `cargo run --offline --example listen -- --list`
 use std::{
+    path::PathBuf,
     thread,
     time::{Duration, Instant},
 };
@@ -11,7 +15,20 @@ use std::{
 use amber::audio::{Capture, Source, Status, list_devices};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let save = args.iter().position(|arg| arg == "--save").map(|at| {
+        let path = args.get(at + 1).cloned();
+        args.drain(at..(at + 2).min(args.len()));
+        path
+    });
+    let save = match save {
+        Some(Some(path)) => Some(PathBuf::from(path)),
+        Some(None) => {
+            eprintln!("listen: --save needs a file name such as clip.wav");
+            return;
+        }
+        None => None,
+    };
     if args.first().map(String::as_str) == Some("--list") {
         match list_devices() {
             Ok(devices) => devices.iter().for_each(|device| println!("{device}")),
@@ -33,7 +50,7 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(1.0);
 
-    let mut capture = Capture::start(source, sensitivity);
+    let mut capture = Capture::start_recording(source, sensitivity, save);
     let start = Instant::now();
     let mut said = false;
     while start.elapsed().as_secs_f32() < seconds {

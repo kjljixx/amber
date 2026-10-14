@@ -3,13 +3,15 @@
 //! [`Analyzer`] is pure: feed it mono samples and ask what the music is doing.
 //! With the `audio` feature, [`Capture`] listens to the machine's own output (or
 //! a microphone) and runs an analyzer on what it hears. Nothing here records,
-//! stores or sends sound anywhere.
+//! stores or sends sound anywhere, unless [`Capture::start_recording`] is given a
+//! file to save the clip to, for debugging.
 
 use crate::Excitement;
+use crate::onset::{self, MEL_FFT_SIZE, MelFlux, PeakPicker};
 
 const FFT_SIZE: usize = 1024;
 /// New samples between two looks at the spectrum (about 10 ms at 48 kHz).
-const HOP: usize = 512;
+pub const HOP: usize = 512;
 /// Spectrum range that carries the beat: kicks and snares, not hiss.
 const BEAT_RANGE_HZ: (f32, f32) = (30.0, 4000.0);
 
@@ -25,19 +27,13 @@ const LEVEL_RELEASE_SECONDS: f32 = 0.6;
 /// to read as a swell and an ease, not a flash.
 const PULSE_ATTACK_SECONDS: f32 = 0.025;
 const PULSE_DECAY_SECONDS: f32 = 0.45;
-/// How fast the usual amount of change in the spectrum is learned.
-const FLUX_SECONDS: f32 = 1.0;
-/// A hit rises this many typical deviations above the usual change, and is at
-/// least `PULSE_FLOOR`. Any onset counts, a plucked note as well as a kick, but
-/// a soft one is a small pulse. Shimmer wanders within a deviation or two and
-/// does not count.
-const FLUX_DEVIATIONS: f32 = 4.0;
-/// Spectral flux (see `Analyzer::hop`) below this is the ordinary shimmer of
-/// held sound, vibrato and reverb, which are not hits however still the music.
-const PULSE_FLOOR: f32 = 0.06;
-const MIN_BEAT_GAP_SECONDS: f32 = 0.18;
+/// Any onset counts as a hit, a plucked note as well as a kick, but a soft one is
+/// a small pulse. See [`onset`] for what makes an onset.
+pub const MIN_BEAT_GAP_SECONDS: f32 = 0.03;
 /// Pulse strength of an onset that only just clears the threshold.
 const SOFTEST_PULSE: f32 = 0.25;
+/// An onset this far above the threshold, in decibels, gets the full pulse.
+const FULL_PULSE_DB: f32 = 3.0;
 /// Flux where `activity` starts to rise and where it reaches 1.
 const ACTIVITY_FROM: f32 = 0.03;
 const ACTIVITY_TO: f32 = 0.12;
@@ -57,6 +53,38 @@ const TONE_SECONDS: f32 = 0.3;
 /// held note with vibrato stays put.
 const TONE_DEADBAND: f32 = 0.012;
 
+/// What one look at the spectrum decided about a hit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Verdict {
+    /// The first looks compare against an empty spectrum, which is not a hit.
+    #[default]
+    WarmingUp,
+    Silent,
+    /// The spectrum changed less than the threshold.
+    BelowThreshold,
+    /// The change cleared the threshold, but a look just before it changed more.
+    NotAPeak,
+    /// The change was a peak that cleared the threshold, but the last hit was too recent.
+    TooSoon,
+    Hit,
+}
+
+/// The numbers behind the latest look at the spectrum, to see why a hit was or
+/// was not found. A look happens every [`HOP`] samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Trace {
+    pub rms: f32,
+    /// How much louder the mel bands got since the last look, in decibels: what the
+    /// hit detector looks at.
+    pub flux: f32,
+    pub threshold: f32,
+    /// Seconds since the previous hit, before this look.
+    pub since_beat: f32,
+    /// How strong the hit is, 0 when there is none.
+    pub strength: f32,
+    pub verdict: Verdict,
+}
+
 /// Listens to a stream of samples for loudness and beats.
 pub struct Analyzer {
     sample_rate: f32,
@@ -64,6 +92,7 @@ pub struct Analyzer {
     window: Vec<f32>,
     cos: Vec<f32>,
     sin: Vec<f32>,
+    /// The last `MEL_FFT_SIZE` samples; the shorter looks use the end of it.
     ring: Vec<f32>,
     write: usize,
     since_hop: usize,
@@ -71,8 +100,8 @@ pub struct Analyzer {
     re: Vec<f32>,
     im: Vec<f32>,
     previous: Vec<f32>,
-    flux_mean: f32,
-    flux_deviation: f32,
+    mel: MelFlux,
+    picker: PeakPicker,
     flux_slow: f32,
     density: f32,
     tone_smooth: Option<f32>,
@@ -86,6 +115,7 @@ pub struct Analyzer {
     tone: Option<f32>,
     since_beat: f32,
     hits: u64,
+    trace: Trace,
     heard: bool,
 }
 
@@ -93,6 +123,7 @@ impl Analyzer {
     pub fn new(sample_rate: u32) -> Self {
         let sample_rate = sample_rate.max(8_000) as f32;
         let tau = std::f32::consts::TAU;
+        let (cos, sin) = onset::twiddles(FFT_SIZE);
         let bins = |hz: f32| ((hz * FFT_SIZE as f32 / sample_rate) as usize).clamp(1, FFT_SIZE / 2);
         let (low, high) = (bins(BEAT_RANGE_HZ.0), bins(BEAT_RANGE_HZ.1));
         Self {
@@ -101,21 +132,17 @@ impl Analyzer {
             window: (0..FFT_SIZE)
                 .map(|i| 0.5 - 0.5 * (tau * i as f32 / FFT_SIZE as f32).cos())
                 .collect(),
-            cos: (0..FFT_SIZE / 2)
-                .map(|i| (tau * i as f32 / FFT_SIZE as f32).cos())
-                .collect(),
-            sin: (0..FFT_SIZE / 2)
-                .map(|i| -(tau * i as f32 / FFT_SIZE as f32).sin())
-                .collect(),
-            ring: vec![0.0; FFT_SIZE],
+            cos,
+            sin,
+            ring: vec![0.0; MEL_FFT_SIZE],
             write: 0,
             since_hop: 0,
             hops: 0,
             re: vec![0.0; FFT_SIZE],
             im: vec![0.0; FFT_SIZE],
             previous: vec![0.0; high.saturating_sub(low) + 1],
-            flux_mean: 0.0,
-            flux_deviation: 0.0,
+            mel: MelFlux::new(sample_rate),
+            picker: PeakPicker::new(sample_rate, HOP),
             flux_slow: 0.0,
             density: 0.0,
             tone_smooth: None,
@@ -128,6 +155,7 @@ impl Analyzer {
             tone: None,
             since_beat: MIN_BEAT_GAP_SECONDS,
             hits: 0,
+            trace: Trace::default(),
             heard: false,
         }
     }
@@ -151,6 +179,11 @@ impl Analyzer {
         self.hits
     }
 
+    /// What the latest look at the spectrum decided.
+    pub fn trace(&self) -> Trace {
+        self.trace
+    }
+
     /// Feed mono samples in -1..1. Any chunk size works.
     pub fn push(&mut self, samples: &[f32]) {
         for &sample in samples {
@@ -159,7 +192,7 @@ impl Analyzer {
                 self.heard = true;
             }
             self.ring[self.write] = sample;
-            self.write = (self.write + 1) % FFT_SIZE;
+            self.write = (self.write + 1) % self.ring.len();
             self.since_hop += 1;
             if self.since_hop == HOP {
                 self.since_hop = 0;
@@ -187,8 +220,9 @@ impl Analyzer {
 
         // The last FFT_SIZE samples, oldest first.
         let mut energy = 0.0;
+        let ring = self.ring.len();
         for i in 0..FFT_SIZE {
-            let sample = self.ring[(self.write + i) % FFT_SIZE];
+            let sample = self.ring[(self.write + ring - FFT_SIZE + i) % ring];
             energy += sample * sample;
             self.re[i] = sample * self.window[i];
             self.im[i] = 0.0;
@@ -237,18 +271,46 @@ impl Analyzer {
         self.since_beat += dt;
         self.hit *= (-dt / PULSE_DECAY_SECONDS).exp();
         self.density *= (-dt / DENSITY_SECONDS).exp();
-        let threshold = (self.flux_mean + FLUX_DEVIATIONS * self.flux_deviation).max(PULSE_FLOOR);
+        let novelty = self.mel.measure(&self.ring, self.write);
+        let pick = self.picker.push(novelty);
         // The first looks compare against an empty spectrum, which is not a hit.
-        let warm = self.hops > (FFT_SIZE / HOP) as u64 + 1;
+        let warm = self.hops > (MEL_FFT_SIZE / HOP) as u64 + 1;
         let sounding = warm && rms >= SILENCE;
-        if sounding && flux > threshold && self.since_beat >= MIN_BEAT_GAP_SECONDS {
-            let strength = SOFTEST_PULSE
-                + (1.0 - SOFTEST_PULSE) * ((flux - threshold) / threshold).clamp(0.0, 1.0);
+        let verdict = if !warm {
+            Verdict::WarmingUp
+        } else if rms < SILENCE {
+            Verdict::Silent
+        } else if novelty < pick.threshold {
+            Verdict::BelowThreshold
+        } else if !pick.is_peak {
+            Verdict::NotAPeak
+        } else if self.since_beat < MIN_BEAT_GAP_SECONDS {
+            Verdict::TooSoon
+        } else {
+            Verdict::Hit
+        };
+        let mut strength = 0.0;
+        let since_beat = self.since_beat;
+        // A stronger look right after a hit is the same onset still rising: it
+        // lifts the pulse but is not another hit.
+        if matches!(verdict, Verdict::Hit | Verdict::TooSoon) {
+            strength = SOFTEST_PULSE
+                + (1.0 - SOFTEST_PULSE) * ((novelty - pick.threshold) / FULL_PULSE_DB).clamp(0.0, 1.0);
             self.hit = self.hit.max(strength);
+        }
+        if verdict == Verdict::Hit {
             self.density = (self.density + DENSITY_STEP * strength).min(1.0);
             self.since_beat = 0.0;
             self.hits += 1;
         }
+        self.trace = Trace {
+            rms,
+            flux: novelty,
+            threshold: pick.threshold,
+            since_beat,
+            strength,
+            verdict,
+        };
 
         // How much the sound is changing: how many hits there have been lately, or
         // how much the spectrum churns above its ordinary shimmer.
@@ -292,45 +354,13 @@ impl Analyzer {
             self.tone_smooth = None;
             None
         };
-        // Hits themselves are left out of what counts as usual.
-        if flux <= threshold {
-            self.flux_deviation +=
-                ((flux - self.flux_mean).abs() - self.flux_deviation) * blend(FLUX_SECONDS);
-            self.flux_mean += (flux - self.flux_mean) * blend(FLUX_SECONDS);
-        }
         self.flux_slow += (flux - self.flux_slow) * blend(FLUX_SLOW_SECONDS);
         self.pulse += (self.hit - self.pulse) * blend(PULSE_ATTACK_SECONDS);
         self.held_pulse = self.held_pulse.max(self.pulse);
     }
 
-    /// In-place radix-2 transform of `re`/`im`.
     fn fft(&mut self) {
-        let n = FFT_SIZE;
-        let bits = n.trailing_zeros();
-        for i in 0..n {
-            let j = i.reverse_bits() >> (usize::BITS - bits);
-            if j > i {
-                self.re.swap(i, j);
-                self.im.swap(i, j);
-            }
-        }
-        let mut size = 2;
-        while size <= n {
-            let (half, step) = (size / 2, n / size);
-            for start in (0..n).step_by(size) {
-                for k in 0..half {
-                    let (c, s) = (self.cos[k * step], self.sin[k * step]);
-                    let (a, b) = (start + k, start + k + half);
-                    let tr = self.re[b] * c - self.im[b] * s;
-                    let ti = self.re[b] * s + self.im[b] * c;
-                    self.re[b] = self.re[a] - tr;
-                    self.im[b] = self.im[a] - ti;
-                    self.re[a] += tr;
-                    self.im[a] += ti;
-                }
-            }
-            size *= 2;
-        }
+        onset::fft(&mut self.re, &mut self.im, &self.cos, &self.sin);
     }
 }
 
@@ -361,6 +391,9 @@ pub use capture::{Capture, list_devices};
 
 #[cfg(feature = "audio")]
 mod capture {
+    use std::fs::File;
+    use std::io::BufWriter;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -423,10 +456,13 @@ mod capture {
         }
     }
 
+    type Recorder = hound::WavWriter<BufWriter<File>>;
+
     #[derive(Default)]
     struct Shared {
         analyzer: Mutex<Option<Analyzer>>,
         problem: Mutex<Option<String>>,
+        recorder: Mutex<Option<Recorder>>,
     }
 
     /// Listens on its own thread; the owner polls for the current excitement.
@@ -443,12 +479,22 @@ mod capture {
 
     impl Capture {
         pub fn start(source: Source, sensitivity: f32) -> Self {
-            info!(?source, sensitivity, "audio capture starting");
+            Self::start_recording(source, sensitivity, None)
+        }
+
+        /// Like `start`, and also saves the mono sound it hears to a WAV file,
+        /// to replay through an [`Analyzer`] later.
+        pub fn start_recording(
+            source: Source,
+            sensitivity: f32,
+            record_to: Option<PathBuf>,
+        ) -> Self {
+            info!(?source, sensitivity, ?record_to, "audio capture starting");
             let shared = Arc::new(Shared::default());
             let (opened_tx, opened) = mpsc::channel();
             let (stop, stopped) = mpsc::channel::<()>();
             let worker = Arc::clone(&shared);
-            thread::spawn(move || match open(&source, sensitivity, &worker) {
+            thread::spawn(move || match open(&source, sensitivity, record_to.as_deref(), &worker) {
                 Ok((stream, name)) => {
                     info!(device = name, "audio capture opened");
                     let _ = opened_tx.send(Ok(name));
@@ -519,6 +565,13 @@ mod capture {
 
     impl Drop for Capture {
         fn drop(&mut self) {
+            if let Some(writer) = self.shared.recorder.lock().unwrap().take() {
+                let samples = writer.len();
+                match writer.finalize() {
+                    Ok(()) => info!(samples, "audio recording saved"),
+                    Err(error) => warn!(%error, "audio recording could not be saved"),
+                }
+            }
             info!(
                 seconds = self.started.elapsed().as_secs(),
                 status = ?self.status,
@@ -582,6 +635,7 @@ mod capture {
     fn open(
         source: &Source,
         sensitivity: f32,
+        record_to: Option<&Path>,
         shared: &Arc<Shared>,
     ) -> Result<(cpal::Stream, String), String> {
         let host = cpal::default_host();
@@ -605,6 +659,18 @@ mod capture {
         );
         *shared.analyzer.lock().unwrap() =
             Some(Analyzer::new(config.sample_rate()).with_sensitivity(sensitivity));
+        if let Some(path) = record_to {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: config.sample_rate(),
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let writer = hound::WavWriter::create(path, spec)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            *shared.recorder.lock().unwrap() = Some(writer);
+            info!(path = %path.display(), "audio recording to file");
+        }
 
         let problems = Arc::clone(shared);
         let on_error = move |error: Error| match error.kind() {
@@ -660,6 +726,13 @@ mod capture {
             if let Some(analyzer) = shared.analyzer.lock().unwrap().as_mut() {
                 analyzer.push(&mono);
             }
+            let mut recorder = shared.recorder.lock().unwrap();
+            if let Some(writer) = recorder.as_mut()
+                && let Err(error) = mono.iter().try_for_each(|&sample| writer.write_sample(sample))
+            {
+                *shared.problem.lock().unwrap() = Some(format!("recording failed: {error}"));
+                *recorder = None;
+            }
         }
     }
 }
@@ -687,13 +760,14 @@ mod tests {
             .collect()
     }
 
-    /// A kick drum every `period` seconds: a short, falling 60 Hz thump.
+    /// A kick drum every `period` seconds: a short, falling 60 Hz thump that dies away
+    /// before it ends, since a sound cut off while audible is itself a new sound.
     fn kicks(seconds: f32, period: f32) -> Vec<f32> {
         let mut out = vec![0.0; (seconds * RATE as f32) as usize];
         let mut start = 0.2;
         while start < seconds {
             let first = (start * RATE as f32) as usize;
-            for i in 0..(0.12 * RATE as f32) as usize {
+            for i in 0..(0.3 * RATE as f32) as usize {
                 let t = i as f32 / RATE as f32;
                 if let Some(slot) = out.get_mut(first + i) {
                     *slot = 0.8

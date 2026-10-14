@@ -134,11 +134,11 @@ pub struct Reactivity {
 impl Default for Reactivity {
     fn default() -> Self {
         Self {
-            speed: 2.25,
+            speed: 1.5,
             kick: 4.5,
-            busy: 3.75,
+            busy: 2.5,
             warp: 0.75,
-            steer: 10.0,
+            steer: 5.0,
         }
     }
 }
