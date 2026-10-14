@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, ViewportBuilder};
 const DIM_ALPHA: u8 = 200;
 const SCRIM_ALPHA: u8 = 140;
 const BORDER_WIDTH: f32 = 6.0;
-const BODY_PREFIX: &str = "Please navigate away from the distraction. Stay focused on ";
+const BODY_PREFIX: &str = "Please navigate away from the distraction.\nStay focused on ";
 const BODY_COLOR: Color32 = Color32::from_gray(220);
 
 pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe::Result {
@@ -110,7 +110,10 @@ impl Overlay {
             }
             None => job.append(OFF_TASK_BODY, 0.0, format(BODY_COLOR)),
         }
-        job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+        job.wrap = egui::text::TextWrapping {
+            max_rows: 2,
+            ..egui::text::TextWrapping::truncate_at_width(max_width)
+        };
         job
     }
 }
