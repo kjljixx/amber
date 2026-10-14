@@ -289,7 +289,7 @@ impl GradientView {
         let Excitement {
             level, activity, ..
         } = self.excitement;
-        (1.0 + self.reactivity.warp * (0.25 * level + 0.5 * activity)).clamp(0.0, 4.0)
+        (1.0 + self.reactivity.warp * (0.125 * level + 0.25 * activity)).clamp(0.0, 4.0)
     }
 
     fn sync_clock(&mut self, now: Instant) {
