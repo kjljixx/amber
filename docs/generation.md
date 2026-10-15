@@ -42,7 +42,7 @@ decision-to-composition approach; our point placement is adapted for this render
 Motion follows the layout: sky bands breathe while keeping their order, the
 horizon seam bends and changes width, and a glow drifts and expands gently.
 Scatter and superscatter points can cross one another; wash patches move slowly.
-Each path is seeded, smooth, and non-looping. No prism, grain, or zoom is added.
+Each path is seeded, smooth, and non-looping. No grain or zoom is added.
 The point composition stays deterministic, while each
 new generated recipe receives a fresh uniformly random warp seed from the
 operating system (0–999). Reusing a cached design also gets a fresh warp seed.

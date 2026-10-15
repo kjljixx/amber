@@ -166,6 +166,7 @@ impl CompiledRecipe {
         } else {
             Warp::default()
         })
+        .with_prism(self.warp.seed())
     }
 }
 
@@ -311,7 +312,8 @@ mod tests {
                                     })
                                 } else {
                                     Warp::default()
-                                });
+                                })
+                                .with_prism(recipe.seed);
                             for y in 0..8 {
                                 for x in 0..8 {
                                     let (x, y) = (x as f32 / 7.0, y as f32 / 7.0);

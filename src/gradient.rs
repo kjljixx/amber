@@ -1,9 +1,11 @@
-use crate::color::{Oklab, Rgb, oklab_to_rgb, rgb_to_oklab};
-use crate::warp::Warp;
+use crate::color::{Oklab, Rgb, linear_to_rgb, oklab_to_linear, oklab_to_rgb, rgb_to_oklab};
 #[cfg(test)]
 use crate::warp::WarpStack;
+use crate::warp::{Warp, fbm};
 
 const MAX_POINTS: usize = 256;
+/// Mesh uses 0.25 to 0.7, following its shimmer setting.
+const PRISM_STRENGTH: f32 = 0.4;
 const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.05..=10.0;
 const STRETCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
 const STRENGTH_RANGE: std::ops::RangeInclusive<f32> = 0.05..=20.0;
@@ -103,6 +105,16 @@ pub struct PreparedGradient {
     x_scale: f32,
     radius_squared: f32,
     warp: Warp,
+    prism: Option<Prism>,
+}
+
+/// Splits the red and blue channels along one axis, like light through a prism.
+#[derive(Clone, Copy)]
+struct Prism {
+    /// Distance each outer channel moves from the center, in warped space.
+    spread: f32,
+    /// Direction of the split before the warp bends it, in radians.
+    angle: f32,
 }
 
 impl Gradient {
@@ -205,6 +217,7 @@ impl Gradient {
             x_scale,
             radius_squared: self.radius_squared,
             warp: Warp::default(),
+            prism: None,
         }
     }
 }
@@ -312,6 +325,15 @@ impl PreparedGradient {
         self
     }
 
+    /// Split the color channels like Mesh does. The seed tilts the split axis.
+    pub(crate) fn with_prism(mut self, seed: u16) -> Self {
+        self.prism = Some(Prism {
+            spread: PRISM_STRENGTH * 0.12,
+            angle: 1.35 + (f32::from(seed) * 0.071).fract() * 0.5,
+        });
+        self
+    }
+
     /// Add a localized, slowly wandering response to a transient sound pulse.
     pub(crate) fn with_local_pulse(
         mut self,
@@ -328,6 +350,24 @@ impl PreparedGradient {
 
     pub fn sample(&self, x: f32, y: f32) -> Rgb {
         let position = self.warp.apply([(x - 0.5) * self.x_scale, y - 0.5]);
+        let Some(prism) = self.prism else {
+            return oklab_to_rgb(self.field(position));
+        };
+        let angle =
+            prism.angle + (fbm([position[0] * 0.9 + 5.0, position[1] * 0.9 + 5.0]) - 0.45) * 1.2;
+        let (sin, cos) = angle.sin_cos();
+        let offset = [cos * prism.spread, sin * prism.spread];
+        let channel = |sign: f32, index: usize| {
+            let shifted = [
+                position[0] + sign * offset[0],
+                position[1] + sign * offset[1],
+            ];
+            oklab_to_linear(self.field(shifted))[index]
+        };
+        linear_to_rgb([channel(1.0, 0), channel(0.0, 1), channel(-1.0, 2)])
+    }
+
+    fn field(&self, position: [f32; 2]) -> Oklab {
         let mut distances = [0.0; MAX_POINTS];
         let mut nearest = f32::INFINITY;
 
@@ -351,7 +391,7 @@ impl PreparedGradient {
             total_weight += weight;
         }
 
-        oklab_to_rgb(lab.map(|channel| channel / total_weight))
+        lab.map(|channel| channel / total_weight)
     }
 }
 

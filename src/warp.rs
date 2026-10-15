@@ -834,7 +834,7 @@ fn noise([x, y]: [f32; 2]) -> f32 {
     )
 }
 
-fn fbm([mut x, mut y]: [f32; 2]) -> f32 {
+pub(crate) fn fbm([mut x, mut y]: [f32; 2]) -> f32 {
     let mut value = 0.0;
     let mut amplitude = 0.55;
     for _ in 0..3 {

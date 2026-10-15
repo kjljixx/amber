@@ -4,8 +4,8 @@ Status: steps 1 and 2 implemented, plus time-driven distortion, swirl, and color
 a comparison toggle, pause/resume at a 20 FPS target, and Simple/Complex
 presets. Sampling and previous-frame costs are displayed for comparison.
 Point drift follows the site's per-point sine/cosine paths at motion 0.5; `d`
-toggles it independently of `w` (warp). Pause freezes both. Grain is planned;
-prism channel separation has been dropped.
+toggles it independently of `w` (warp). Pause freezes both. Grain is planned.
+Prism channel separation is always on, at strength 0.4 (the site uses 0.25 to 0.7).
 
 ## What we are building
 

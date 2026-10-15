@@ -22,7 +22,7 @@ pub fn rgb_to_oklab(rgb: Rgb) -> Oklab {
     ]
 }
 
-fn oklab_to_linear([l, a, b]: Oklab) -> [f32; 3] {
+pub(crate) fn oklab_to_linear([l, a, b]: Oklab) -> [f32; 3] {
     let ll = (l + 0.3963377774 * a + 0.2158037573 * b).powi(3);
     let mm = (l - 0.1055613458 * a - 0.0638541728 * b).powi(3);
     let ss = (l - 0.0894841775 * a - 1.2914855480 * b).powi(3);
@@ -35,7 +35,11 @@ fn oklab_to_linear([l, a, b]: Oklab) -> [f32; 3] {
 }
 
 pub fn oklab_to_rgb(lab: Oklab) -> Rgb {
-    oklab_to_linear(lab).map(|channel| {
+    linear_to_rgb(oklab_to_linear(lab))
+}
+
+pub(crate) fn linear_to_rgb(linear: [f32; 3]) -> Rgb {
+    linear.map(|channel| {
         let linear = channel.clamp(0.0, 1.0);
         let srgb = if linear <= 0.0031308 {
             linear * 12.92
