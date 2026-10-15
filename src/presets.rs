@@ -11,8 +11,40 @@ pub fn presets() -> [Preset; 2] {
         Point::new([0.85, 0.2], [236, 100, 170]),
         Point::new([0.5, 0.85], [245, 165, 65]),
     ];
-    // Mesh's Prism preset: https://mesh.iamnoman.com
-    let complex = [
+    [
+        Preset {
+            name: "Simple",
+            recipe: Recipe {
+                points: simple.into(),
+                softness: 0.7,
+                distortion: 1.0,
+                swirl: 0.45,
+                seed: 58,
+                motion: 0.5,
+                motion_style: crate::MotionStyle::Loop,
+                warp: Vec::new(),
+            },
+        },
+        Preset {
+            name: "Complex",
+            recipe: Recipe {
+                points: prism_points().into(),
+                softness: 0.44,
+                distortion: 1.0,
+                swirl: 0.0,
+                seed: 58,
+                motion: 0.5,
+                motion_style: crate::MotionStyle::Loop,
+                warp: Vec::new(),
+            },
+        },
+    ]
+}
+
+/// Mesh's Prism preset: https://mesh.iamnoman.com. Its points are also the
+/// skeleton the site's layouts place their colors on.
+pub(crate) fn prism_points() -> [Point; 18] {
+    [
         Point::new([0.06, 0.06], [10, 76, 198]),
         Point::new([0.36, 0.10], [5, 96, 207]),
         Point::new([0.70, 0.12], [4, 132, 204]),
@@ -31,33 +63,5 @@ pub fn presets() -> [Preset; 2] {
         Point::new([0.85, 0.90], [242, 200, 158]),
         Point::new([0.03, 0.99], [242, 60, 216]),
         Point::new([0.24, 0.98], [255, 96, 180]),
-    ];
-    [
-        Preset {
-            name: "Simple",
-            recipe: Recipe {
-                points: simple.into(),
-                softness: 0.7,
-                distortion: 1.0,
-                swirl: 0.45,
-                seed: 58,
-                motion: 0.5,
-                motion_style: crate::MotionStyle::Loop,
-                warp: Vec::new(),
-            },
-        },
-        Preset {
-            name: "Complex",
-            recipe: Recipe {
-                points: complex.into(),
-                softness: 0.44,
-                distortion: 1.0,
-                swirl: 0.0,
-                seed: 58,
-                motion: 0.5,
-                motion_style: crate::MotionStyle::Loop,
-                warp: Vec::new(),
-            },
-        },
     ]
 }

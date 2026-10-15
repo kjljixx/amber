@@ -776,16 +776,19 @@ fn grid_rules_assign_slots_the_way_the_original_layouts_did() {
         }
         counts
     };
-    // Sky: top three rows main, the 0.6 row second, the bottom two accent.
-    assert_eq!(counts(GridRule::Sky), [9, 3, 6]);
+    // The slots follow mesh.iamnoman.com's rules on its Prism skeleton. Sky:
+    // the top rows main, the middle second, and the lowest seven points a
+    // coin flip between second and accent.
+    assert_eq!(counts(GridRule::Sky), [8, 10, 0]);
     // Horizon: a bright accent seam between two regions.
-    assert_eq!(counts(GridRule::Horizon), [9, 6, 3]);
+    assert_eq!(counts(GridRule::Horizon), [7, 5, 6]);
     // Glow: a small accent core inside a mostly main surround.
-    assert_eq!(counts(GridRule::Glow), [14, 2, 2]);
+    assert_eq!(counts(GridRule::Glow), [11, 5, 2]);
+    assert_eq!(counts(GridRule::Scatter), [6, 9, 3]);
     // Superscatter keeps its 9/6/3 quotas.
     assert_eq!(counts(GridRule::Superscatter), [9, 6, 3]);
-    // Wash: one second point and one accent point on a main field.
-    assert_eq!(counts(GridRule::Wash), [16, 1, 1]);
+    // Wash: a few second and accent points on a main field.
+    assert_eq!(counts(GridRule::Wash), [13, 3, 2]);
     for rule in [GridRule::Sky, GridRule::Scatter, GridRule::Wash] {
         assert_eq!(palette(rule).compile().unwrap().points.len(), 18);
     }

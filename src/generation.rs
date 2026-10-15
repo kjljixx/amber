@@ -562,7 +562,7 @@ impl Design {
         let mut hues = self.hues.clone();
         if matches!(self.layout, Layout::Sky | Layout::Horizon) {
             if let Some(index) = hues.iter().position(|hue| hue == &self.top) {
-                hues.swap(0, index);
+                hues[..=index].rotate_right(1);
             }
         }
         let mut palette = BTreeMap::new();

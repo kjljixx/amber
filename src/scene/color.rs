@@ -37,6 +37,33 @@ pub(crate) fn family(name: &str) -> Option<(f32, f32, f32)> {
         .map(|(_, hue, chroma, light)| (*hue, *chroma, *light))
 }
 
+/// How the site's layouts pull a family's lightness toward its preferred value
+/// (a weight) and the darkest it may get (a floor). Families left out, such as
+/// blue and magenta, keep whatever lightness the layout gives them.
+const GRID_PULL: &[(&str, f32, f32)] = &[
+    ("coral", 0.4, 0.0),
+    ("orange", 0.3, 0.0),
+    ("amber", 0.5, 0.68),
+    ("yellow", 0.6, 0.84),
+    ("lime", 0.5, 0.78),
+    ("cyan", 0.4, 0.0),
+    ("sky", 0.5, 0.0),
+    ("indigo", 0.5, 0.0),
+    ("pink", 0.5, 0.0),
+    ("brown", 0.7, 0.0),
+    ("cream", 0.75, 0.0),
+    ("white", 0.85, 0.0),
+    ("grey", 0.6, 0.0),
+    ("black", 0.85, 0.0),
+];
+
+pub(crate) fn grid_pull(name: &str) -> Option<(f32, f32)> {
+    GRID_PULL
+        .iter()
+        .find(|(id, _, _)| *id == name)
+        .map(|(_, weight, floor)| (*weight, *floor))
+}
+
 /// A palette entry: a named color family, or an exact `#rrggbb` color.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -99,9 +126,9 @@ impl Lch {
 /// A scene's global lightness, contrast and saturation, as multipliers.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Tone {
-    base: f32,
-    contrast: f32,
-    chroma: f32,
+    pub(super) base: f32,
+    pub(super) contrast: f32,
+    pub(super) chroma: f32,
 }
 
 impl Tone {

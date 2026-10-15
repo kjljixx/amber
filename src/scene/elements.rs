@@ -6,7 +6,19 @@ use std::{collections::BTreeMap, f32::consts::TAU};
 
 use serde::{Deserialize, Serialize};
 
-use super::{ColorSpec, Ctx, Shape, check};
+use super::{
+    ColorSpec, Ctx, Shape, check,
+    color::{Lch, grid_pull},
+    family,
+};
+use crate::{
+    color::{Oklab, rgb_to_oklab},
+    presets::prism_points,
+};
+
+/// How much of a skeleton point's lightness, relative to the skeleton's mean,
+/// carries into the grid point placed on it.
+const GRID_TONE_WEIGHT: f32 = 0.35;
 
 /// How the original eighteen-point layouts assign palette slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -789,112 +801,182 @@ pub(super) fn spread_points(
     positions
 }
 
-/// The original layouts. The order of random draws is part of their output, so
-/// it is kept exactly: phase, then positions, then per point a jitter pair,
-/// any rule draws, and the color's three draws.
+const GRID_SLOTS: [&str; 3] = ["main", "second", "accent"];
+
+impl Ctx<'_> {
+    /// A grid point's color as mesh.iamnoman.com computes it: the layout's
+    /// shade, the Prism skeleton's `tone` for this point, a pull toward the
+    /// family's preferred lightness, and smaller random variation than
+    /// [`Ctx::color`]. `side` is 1 or -1 and alternates the hue and lightness
+    /// offset between neighbors.
+    fn grid_color(&mut self, slot: usize, shade: f32, tone: f32, side: f32) -> Oklab {
+        let role = GRID_SLOTS[slot];
+        let Some(ColorSpec::Family(name)) = self.palette.get(role) else {
+            return self.color(role, shade);
+        };
+        let (mut hue, mut chroma, preferred) =
+            family(name).expect("color families are checked when a scene is validated");
+        let tint = GRID_SLOTS.iter().find_map(|role| match self.palette.get(*role) {
+            Some(ColorSpec::Family(name)) => family(name).filter(|(_, chroma, _)| *chroma > 0.05),
+            _ => None,
+        });
+        let mut floor = 0.0_f32;
+        let pull = grid_pull(name);
+        if let Some((_, floor_of_family)) = pull {
+            floor = floor_of_family;
+        }
+        if chroma < 0.03 {
+            if let Some((tint_hue, _, _)) = tint {
+                (hue, chroma) = (tint_hue, 0.04);
+            }
+        } else if slot > 0 && (128.0..172.0).contains(&hue) {
+            floor = floor.max(0.52);
+        }
+        let base = self.tone.base;
+        let target = base
+            + shade * self.tone.contrast
+            + GRID_TONE_WEIGHT * tone
+            + 0.04 * side
+            + (self.random() - 0.5) * 0.05;
+        let pulled = pull.map_or(target, |(weight, _)| target + (preferred - target) * weight);
+        let accent = slot == 2;
+        let l = pulled
+            .min(0.97)
+            .max(if accent && base < 0.45 { base + 0.3 } else { 0.08 })
+            .max(floor);
+        let c = chroma
+            * self.tone.chroma
+            * if accent { 1.15 } else { 1.0 }
+            * (0.9 + 0.2 * self.random());
+        let h = hue + 9.0 * side + (self.random() - 0.5) * 12.0;
+        Lch { l, c, h }.to_oklab()
+    }
+}
+
+/// The layouts. Unless it is the superscatter, every point sits on one of the
+/// Prism skeleton's eighteen points. The order of random draws is part of their
+/// output, so it is kept exactly: the scatter phase (a second one for the
+/// scatter layout), then per point a jitter pair, any rule draws, and the
+/// color's three draws. The superscatter draws its positions first.
 fn emit_grid(rule: GridRule, ctx: &mut Ctx) {
-    const SLOTS: [&str; 3] = ["main", "second", "accent"];
     let scatter_phase = ctx.random() * TAU;
+    let scatter_second_phase = if rule == GridRule::Superscatter {
+        0.0
+    } else {
+        ctx.random() * TAU
+    };
     let scattered = if rule == GridRule::Superscatter {
         spread_points(18, [0.0, 1.0], [0.0, 1.0], 0.02, &mut || ctx.random())
     } else {
         Vec::new()
     };
+    let skeleton = prism_points();
+    let lightness = |point: &crate::gradient::Point| rgb_to_oklab(point.color)[0];
+    let mean_lightness = skeleton.iter().map(lightness).sum::<f32>() / skeleton.len() as f32;
     let mut placed: Vec<([f32; 2], usize)> = Vec::new();
-    // Eighteen centers cover edges as well as the interior.
-    for row in 0..6 {
-        for column in 0..3 {
-            let [x, y] = if rule == GridRule::Superscatter {
-                scattered[row * 3 + column]
-            } else {
-                [
-                    (column as f32 / 2.0 + (ctx.random() - 0.5) * 0.08).clamp(0.0, 1.0),
-                    (row as f32 / 5.0 + (ctx.random() - 0.5) * 0.06).clamp(0.0, 1.0),
-                ]
-            };
-            let distance = (x - 0.5).hypot((y - 0.5) * 1.2);
-            let (index, shade) = match rule {
-                GridRule::Sky => (
-                    if y < 0.45 {
+    for (point, skeleton_point) in skeleton.iter().enumerate() {
+        let [x, y] = if rule == GridRule::Superscatter {
+            scattered[point]
+        } else {
+            skeleton_point
+                .position
+                .map(|value| value + (ctx.random() - 0.5) * 0.08)
+        };
+        let distance = (x - 0.5).hypot((y - 0.5) * 1.2);
+        let (index, shade) = match rule {
+            GridRule::Sky => (
+                if y < 0.45 {
+                    0
+                } else if y < 0.75 || ctx.random() >= 0.5 {
+                    1
+                } else {
+                    2
+                },
+                (y - 0.5) * 2.0,
+            ),
+            GridRule::Horizon => (
+                if (y - 0.58).abs() < 0.14 {
+                    2
+                } else if y < 0.58 {
+                    0
+                } else {
+                    1
+                },
+                if (y - 0.58).abs() < 0.14 {
+                    1.0
+                } else if y < 0.58 {
+                    -0.6
+                } else {
+                    0.2
+                },
+            ),
+            GridRule::Glow => (
+                if distance < 0.22 {
+                    2
+                } else if distance < 0.42 {
+                    1
+                } else {
+                    0
+                },
+                1.0 - 3.2 * distance,
+            ),
+            GridRule::Scatter => {
+                let value = 0.5
+                    + 0.25 * (5.3 * x + scatter_phase).sin()
+                    + 0.25 * (4.1 * y + 1.7 * x + scatter_second_phase).sin();
+                (
+                    if value < 0.5 {
                         0
-                    } else if y < 0.75 {
+                    } else if value < 0.82 {
                         1
                     } else {
                         2
                     },
-                    (y - 0.5) * 2.0,
-                ),
-                GridRule::Horizon => (
-                    if (y - 0.58).abs() < 0.14 {
-                        2
-                    } else if y < 0.58 {
-                        0
-                    } else {
-                        1
-                    },
-                    if (y - 0.58).abs() < 0.14 { 1.0 } else { -0.4 },
-                ),
-                GridRule::Glow => (
-                    if distance < 0.25 {
-                        2
-                    } else if distance < 0.45 {
-                        1
-                    } else {
-                        0
-                    },
-                    1.0 - 3.2 * distance,
-                ),
-                GridRule::Scatter => {
-                    let value = 0.5
-                        + 0.25 * (5.3 * x + scatter_phase).sin()
-                        + 0.25 * (4.1 * y + 1.7 * x).sin();
-                    (
-                        if value < 0.5 {
-                            0
-                        } else if value < 0.82 {
-                            1
-                        } else {
-                            2
-                        },
-                        (value - 0.5) * 1.6,
-                    )
+                    (value - 0.5) * 1.6,
+                )
+            }
+            GridRule::Superscatter => {
+                let mut counts = [0; 3];
+                let mut penalties = [0.0_f32; 3];
+                for &([px, py], family) in &placed {
+                    counts[family] += 1;
+                    let distance = (x - px).hypot(y - py);
+                    penalties[family] += 1.0 / distance.max(0.03).powi(2);
                 }
-                GridRule::Superscatter => {
-                    let mut counts = [0; 3];
-                    let mut penalties = [0.0_f32; 3];
-                    for &([px, py], family) in &placed {
-                        counts[family] += 1;
-                        let distance = (x - px).hypot(y - py);
-                        penalties[family] += 1.0 / distance.max(0.03).powi(2);
-                    }
-                    // Primary / secondary / accent quotas retain palette
-                    // hierarchy. Normalize neighbor penalties so the primary
-                    // can recur more often.
-                    let targets = [9, 6, 3];
-                    for family in 0..3 {
-                        penalties[family] /= targets[family] as f32;
-                    }
-                    let start = (ctx.random() * 3.0) as usize;
-                    let index = (0..3)
-                        .map(|offset| (start + offset) % 3)
-                        .filter(|&family| counts[family] < targets[family])
-                        .min_by(|&a, &b| penalties[a].total_cmp(&penalties[b]))
-                        .unwrap();
-                    (index, (ctx.random() - 0.5) * 1.2)
+                // Primary / secondary / accent quotas retain palette
+                // hierarchy. Normalize neighbor penalties so the primary
+                // can recur more often.
+                let targets = [9, 6, 3];
+                for family in 0..3 {
+                    penalties[family] /= targets[family] as f32;
                 }
-                GridRule::Wash => (
-                    if row == 3 && column == 1 {
-                        1
-                    } else if row == 5 && column == 0 {
-                        2
-                    } else {
-                        0
-                    },
-                    (ctx.random() - 0.5) * 0.4,
-                ),
-            };
-            placed.push(([x, y], index));
-            ctx.emit([x, y], SLOTS[index], shade, 0.0, Shape::default());
+                let start = (ctx.random() * 3.0) as usize;
+                let index = (0..3)
+                    .map(|offset| (start + offset) % 3)
+                    .filter(|&family| counts[family] < targets[family])
+                    .min_by(|&a, &b| penalties[a].total_cmp(&penalties[b]))
+                    .unwrap();
+                (index, (ctx.random() - 0.5) * 1.2)
+            }
+            GridRule::Wash => (
+                if point % 7 == 3 {
+                    1
+                } else if point % 11 == 5 {
+                    2
+                } else {
+                    0
+                },
+                (ctx.random() - 0.5) * 0.8,
+            ),
+        };
+        placed.push(([x, y], index));
+        if rule == GridRule::Superscatter {
+            ctx.emit([x, y], GRID_SLOTS[index], shade, 0.0, Shape::default());
+        } else {
+            let side = if (point + index) % 2 == 0 { 1.0 } else { -1.0 };
+            let tone = lightness(skeleton_point) - mean_lightness;
+            let color = ctx.grid_color(index, shade, tone, side);
+            ctx.emit_lab([x, y], color, 0.0, Shape::default());
         }
     }
 }
