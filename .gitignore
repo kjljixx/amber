@@ -5,3 +5,14 @@
 !.env.example
 /assets/phrases.txt
 lyrics.csv
+/01_download_lyrics.py
+/02_see_genres.py
+/03_random_sample.py
+/04_jev_choice.py
+/05_build_phrase_pool.py
+/clip-trace/
+/clip.librosa.json
+/clip.wav
+/examples/trace.html
+/examples/trace.rs
+/tools/librosa_curves.py
