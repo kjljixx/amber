@@ -51,7 +51,8 @@
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
 //! cool". Jev picks the lyric line that best fits it from `assets/phrases.txt`
 //! (made by `scripts/05_build_phrase_pool.py`), and the gradient is made from that
-//! lyric, which is shown above the clock. Every task after that is sent with
+//! lyric, which is shown above the clock. `r` at home asks for a new lyric and
+//! gradient for the moment. Every task after that is sent with
 //! only a hint of the moment, its light and
 //! weather ("golden hour, light rain"), so the task leads. The weather is for
 //! wherever the machine's IP address seems to be; `--location Lisbon` names a
@@ -669,6 +670,31 @@ fn gradient_description(task: &str, moment: Option<&Moment>) -> String {
     }
 }
 
+/// Ask Jev for a lyric and gradient for the moment, shown as the description
+/// once they arrive. Returns whether a request started: it does not while the
+/// moment is unknown or another request is in flight.
+fn request_moment_gradient(
+    task: &mut TaskLine,
+    generator: &mut Generator,
+    moment: Option<&Moment>,
+) -> bool {
+    let Some(moment) = moment.filter(|_| !generator.is_pending()) else {
+        warn!(
+            moment_known = moment.is_some(),
+            generating = generator.is_pending(),
+            "no new lyric could be requested"
+        );
+        return false;
+    };
+    task.started_automatically(moment.full.clone());
+    generator.submit_moment(&moment.full);
+    if !generator.is_pending() {
+        task.failed();
+        return false;
+    }
+    true
+}
+
 /// A list to choose from made of what `loader` has so far: its tasks, or
 /// in their place why there are none yet.
 fn picker_for(loader: &Loader) -> Picker {
@@ -1150,16 +1176,11 @@ fn run() -> io::Result<()> {
                 }
             }
             if let Some(found) = ambient.poll() {
-                let description = found.full.clone();
                 moment = Some(found);
                 // Start from a gradient for the moment, unless a description has
                 // already been asked for in the meantime.
                 if task.shown.is_none() && task.in_flight.is_none() {
-                    task.started_automatically(description.clone());
-                    generator.submit_moment(&description);
-                    if !generator.is_pending() {
-                        task.failed();
-                    }
+                    request_moment_gradient(&mut task, &mut generator, moment.as_ref());
                     redraw = true;
                 }
             }
@@ -1396,20 +1417,11 @@ fn run() -> io::Result<()> {
                                     if let Some(checker) = focus_checker.as_mut() {
                                         checker.set_task(None, Instant::now());
                                     }
-                                    match moment.as_ref() {
-                                        Some(moment) if !generator.is_pending() => {
-                                            task.started_automatically(moment.full.clone());
-                                            generator.submit_moment(&moment.full);
-                                            if !generator.is_pending() {
-                                                task.failed();
-                                            }
-                                        }
-                                        _ => warn!(
-                                            moment_known = moment.is_some(),
-                                            generating = generator.is_pending(),
-                                            "no new lyric could be requested at home"
-                                        ),
-                                    }
+                                    request_moment_gradient(
+                                        &mut task,
+                                        &mut generator,
+                                        moment.as_ref(),
+                                    );
                                     info!(?view, "empty prompt; pomodoro reset, back to home");
                                 } else if let Some(chosen) =
                                     chosen.filter(|chosen| !chosen.is_empty())
@@ -1511,6 +1523,14 @@ fn run() -> io::Result<()> {
                                 let mut playback = background.playback();
                                 playback.playing = !clock.is_paused();
                                 background.set_playback(playback, now);
+                            }
+                            KeyCode::Char('r' | 'R') if view == View::Home => {
+                                let started = request_moment_gradient(
+                                    &mut task,
+                                    &mut generator,
+                                    moment.as_ref(),
+                                );
+                                info!(started, "new lyric requested at home");
                             }
                             KeyCode::Char('r' | 'R') if view == View::Task => {
                                 clock.reset(Instant::now());
@@ -2282,6 +2302,24 @@ mod tests {
         assert_eq!(parse(&["--tasks=my list.md"]), with("my list.md"));
         assert!(parse(&["--tasks"]).is_err());
         assert!(parse(&["--tasks="]).is_err());
+    }
+
+    #[test]
+    fn no_lyric_is_requested_without_a_moment_to_describe() {
+        let mut task = TaskLine::default();
+        let mut generator = Generator::new();
+        assert!(!request_moment_gradient(&mut task, &mut generator, None));
+        assert!(!generator.is_pending());
+        assert_eq!(task.in_flight, None);
+
+        let blank = Moment {
+            full: " ".into(),
+            brief: String::new(),
+        };
+        assert!(!request_moment_gradient(&mut task, &mut generator, Some(&blank)));
+        assert!(!generator.is_pending());
+        assert_eq!(task.in_flight, None);
+        assert!(!task.automatic);
     }
 
     #[test]

@@ -196,7 +196,8 @@ The lines come from `assets/phrases.txt`, which Git ignores. Make it once with
 `scripts/01_download_lyrics.py`) and keeps 200,000 rock and pop lines, one per song, of 3 to 12 words.
 Without that file the startup gradient fails and amber shows why.
 `amber::phrases` has the sampling and the request; `Generator::submit_moment`
-runs both requests on one worker.
+runs both requests on one worker. `r` at home asks again with the latest moment, for a new lyric and
+gradient; it does nothing while a request is in flight.
 
 Every task you choose after that is sent with only a hint of it, its light and
 weather in a few words ("write the report, with a hint of golden hour, light
