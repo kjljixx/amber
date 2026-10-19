@@ -327,7 +327,7 @@ impl Client {
     fn is_off_task(&self, task: &str, jpeg: &[u8], check_id: u64) -> Result<Decision, String> {
         let data_url = format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg));
         let prompt = format!(
-            "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If an 'Let's get back on track' overlay is visible, ignore it and judge the underlying window instead. If the screenshot is ambiguous, judge it on task."
+            "The user's current task is: {task}. Decide whether the visible computer activity is unrelated to making progress on this task. Count ordinary task work, research, communication required by the task, and brief transitions as on task. If an 'Let's get back on track' overlay is visible, ignore it and judge the underlying window instead. Amber is the user's focus timer: large clock digits over an animated gradient, with the task text. If Amber is the only visible window, judge it on task. If other windows are visible beside it, judge those windows as usual. If the screenshot is ambiguous, judge it on task."
         );
         let request = json!({
             "model": self.model,
@@ -341,7 +341,7 @@ impl Client {
                     "instructions": "Is the visible activity off task?",
                     "criteria": {
                         "true": "The visible activity is clearly unrelated to progress on the stated task.",
-                        "false": "The visible activity is related, ambiguous, or not enough to conclude it is off task."
+                        "false": "The visible activity is related, ambiguous, not enough to conclude it is off task, or only the Amber timer is visible."
                     }
                 }
             }
