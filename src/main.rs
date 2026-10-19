@@ -15,8 +15,8 @@
 //! `cargo run --offline`
 //! t: choose the task, in a fresh box (Enter takes it, Esc cancels) | Space:
 //! pause or resume the timer and the gradient | r: back to the start of the
-//! cycle, 25:00 (Space and r work in the task view) | Up/Down: gradient speed |
-//! Ctrl+C: quit (q and Esc never quit)
+//! cycle, 25:00 (Space and r work in the task view) | Ctrl+C: quit (q and Esc
+//! never quit)
 //!
 //! The task is what the gradient is made for: Jev is given it along with the
 //! moment (see below), and once the gradient is ready the task stays centered
@@ -1499,11 +1499,6 @@ fn run() -> io::Result<()> {
                                     text,
                                     until: now + NOTICE,
                                 });
-                            }
-                            KeyCode::Up | KeyCode::Down => {
-                                let step = if key.code == KeyCode::Up { 1 } else { -1 };
-                                speed.change(step, &mut background)?;
-                                debug!(step, "gradient speed changed");
                             }
                             KeyCode::Char(' ') if view == View::Task => {
                                 let now = Instant::now();

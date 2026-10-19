@@ -86,7 +86,7 @@ It ignores a second request while one is in flight and remembers the last 32
 answers, so repeating a description costs nothing.
 
 `cargo run --offline` is a pomodoro clock that uses it: press `t`
-to choose the task, `Up`/`Down` to change the gradient's speed. Gradients play
+to choose the task. Gradients play
 at 8x the rate Jev suggests by default. Jev is told the task and the moment (see
 below), and once it has made a gradient the task stays above the clock until a
 new one replaces it.
