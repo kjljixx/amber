@@ -1,6 +1,6 @@
 # Amber
 
-A Rust terminal app built with Ratatui and Crossterm.
+A beautifully designed TUI productivity hub made with Ratatui
 
 ## Run
 
@@ -8,15 +8,19 @@ A Rust terminal app built with Ratatui and Crossterm.
 cargo run
 ```
 
-This starts `amber`: the home clock and the pomodoro. The gradient viewer is `cargo run --bin gradient`.
+Press `t` to choose tasks
 
-Press `Ctrl+C` to quit `amber` (`q` and `Esc` never quit it); the gradient viewer also quits with `q` or `Esc`. The app restores the terminal on exit.
+Put in openrouter (used to decide) and todoist api keys in for full features
 
-The preview displays a fixed half-block test pattern: cyan on the upper half
-and amber on the lower half of every cell. It resizes with the terminal and
-waits for input while idle. Use a terminal with truecolor and Unicode support.
+## Cool features
+On startup, a song lyric will be randomly chosen to be the seed for the gradient, based on the current time, season, weather, etc.
 
-If your environment sets `NO_COLOR`, run `env -u NO_COLOR cargo run` to enable
-the colored preview.
+Gradients will react to audio/music, the beat, the swells, etc.
 
-The renderer roadmap is in [docs/renderer-plan.md](docs/renderer-plan.md).
+Gradients can be described w/ natural language!
+
+Tasks connect to Todoist and you can choose a task from todoist!
+
+With no task set, the central clock is just a clock; with a task set it's a pomodoro clock
+
+Decision models check if you're on task or not, if you have a task set.
