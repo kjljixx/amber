@@ -1,8 +1,8 @@
 //! Lyric lines for Jev to choose from, to start a gradient from the moment.
 //!
 //! The pool is a text file with one line per phrase, made by
-//! `05_build_phrase_pool.py` from the lyrics dataset. Jev is shown a random
-//! sample of it and asked which line best fits, as `04_jev_choice.py` does.
+//! `scripts/05_build_phrase_pool.py` from the lyrics dataset. Jev is shown a random
+//! sample of it and asked which line best fits, as `scripts/04_jev_choice.py` does.
 use std::{collections::BTreeMap, path::Path};
 
 use serde_json::{Value, json};
@@ -35,7 +35,7 @@ pub struct Phrase {
 pub fn load_pool(path: &Path) -> Result<Vec<String>, String> {
     let file = std::fs::read_to_string(path).map_err(|error| {
         format!(
-            "Could not read {} ({error}); run 05_build_phrase_pool.py",
+            "Could not read {} ({error}); run scripts/05_build_phrase_pool.py",
             path.display()
         )
     })?;

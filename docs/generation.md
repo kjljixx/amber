@@ -188,12 +188,12 @@ month and weather. Try `cargo run --offline --example ambient`.
 
 That line does not go to the gradient request directly. Jev first chooses, from
 255 random lyric lines, the one that best evokes the moment (one `choice`
-question, as in `04_jev_choice.py`). The gradient is then made from that lyric
+question, as in `scripts/04_jev_choice.py`). The gradient is then made from that lyric
 alone, and the lyric is the caption above the clock.
 
 The lines come from `assets/phrases.txt`, which Git ignores. Make it once with
-`python 05_build_phrase_pool.py`: it reads the Genius lyrics dataset (see
-`01_download_lyrics.py`) and keeps 200,000 rock and pop lines, one per song, of 3 to 12 words.
+`python scripts/05_build_phrase_pool.py`: it reads the Genius lyrics dataset (see
+`scripts/01_download_lyrics.py`) and keeps 200,000 rock and pop lines, one per song, of 3 to 12 words.
 Without that file the startup gradient fails and amber shows why.
 `amber::phrases` has the sampling and the request; `Generator::submit_moment`
 runs both requests on one worker.

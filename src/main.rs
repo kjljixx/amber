@@ -50,7 +50,7 @@
 //! The first gradient is made for the moment: the weekday, time of day, month
 //! and weather, such as "Friday golden hour in October (autumn), light rain,
 //! cool". Jev picks the lyric line that best fits it from `assets/phrases.txt`
-//! (made by `05_build_phrase_pool.py`), and the gradient is made from that
+//! (made by `scripts/05_build_phrase_pool.py`), and the gradient is made from that
 //! lyric, which is shown above the clock. Every task after that is sent with
 //! only a hint of the moment, its light and
 //! weather ("golden hour, light rain"), so the task leads. The weather is for
