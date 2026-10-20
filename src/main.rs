@@ -150,7 +150,7 @@ const NOTICE: Duration = Duration::from_secs(4);
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
 /// How far the caption's backing is darkened, and how many cells it reaches
 /// past each end of the text.
-const SCRIM_ALPHA: f32 = 0.2;
+const SCRIM_ALPHA: f32 = 0.4;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 const WHITE: [u8; 3] = [255, 255, 255];
