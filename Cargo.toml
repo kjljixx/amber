@@ -31,10 +31,6 @@ generation = ["dep:ureq", "dep:getrandom"]
 audio = ["dep:cpal", "dep:hound", "dep:base64"]
 focus-check = ["generation", "dep:base64", "dep:image", "dep:xcap", "dep:eframe"]
 
-[[example]]
-name = "trace"
-required-features = ["audio"]
-
 [[bin]]
 name = "jev"
 path = "src/bin/jev.rs"
