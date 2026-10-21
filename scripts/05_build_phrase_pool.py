@@ -31,7 +31,7 @@ def main():
             break
 
     OUTPUT.parent.mkdir(exist_ok=True)
-    OUTPUT.write_text("\n".join(pool) + "\n")
+    OUTPUT.write_text("\n".join(pool) + "\n", encoding="utf-8")
     print(f"Wrote {len(pool):,} phrases to {OUTPUT}")
 
 

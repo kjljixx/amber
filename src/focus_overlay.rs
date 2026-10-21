@@ -10,12 +10,40 @@ use std::{
 
 use amber::{Rgb, focus::OFF_TASK_BODY};
 use eframe::egui::{self, Color32, ViewportBuilder};
+use tracing::{debug, info, warn};
 
 const DIM_ALPHA: u8 = 200;
 const SCRIM_ALPHA: u8 = 140;
 const BORDER_WIDTH: f32 = 6.0;
 const BODY_PREFIX: &str = "Please navigate away from the distraction.\nStay focused on ";
 const BODY_COLOR: Color32 = Color32::from_gray(220);
+const TITLE: &str = "Amber focus reminder";
+
+/// winit makes a click-through window layered, and Windows draws a layered
+/// window only after its opacity is set. Without this the overlay is
+/// present but invisible.
+#[cfg(target_os = "windows")]
+fn show_layered_window() {
+    type Hwnd = *mut std::ffi::c_void;
+    const LWA_ALPHA: u32 = 2;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class: *const u16, title: *const u16) -> Hwnd;
+        fn SetLayeredWindowAttributes(window: Hwnd, key: u32, alpha: u8, flags: u32) -> i32;
+    }
+    let title: Vec<u16> = TITLE.encode_utf16().chain([0]).collect();
+    let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if window.is_null() {
+        warn!(title = TITLE, "overlay window not found, so it stays invisible");
+    } else if unsafe { SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) } == 0 {
+        warn!(error = %std::io::Error::last_os_error(), "overlay window could not be made visible");
+    } else {
+        info!("overlay window made visible");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_layered_window() {}
 
 pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe::Result {
     // The parent can close stdin when it decides the screen is back on task.
@@ -26,9 +54,10 @@ pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe
         let _ = stdin.lock().read_line(&mut String::new());
         let _ = close_sender.send(());
     });
+    info!(message, task = ?task, has_accent = accent.is_some(), "overlay starting");
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("Amber focus reminder")
+            .with_title(TITLE)
             .with_decorations(false)
             .with_has_shadow(false)
             .with_always_on_top()
@@ -39,7 +68,7 @@ pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe
         ..Default::default()
     };
     eframe::run_native(
-        "Amber focus reminder",
+        TITLE,
         options,
         Box::new(move |creation_context| {
             install_font(&creation_context.egui_ctx);
@@ -51,6 +80,7 @@ pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe
                 }),
                 close_receiver,
                 covers_monitor: false,
+                layered_window_shown: false,
             }))
         }),
     )
@@ -96,6 +126,7 @@ struct Overlay {
     accent: Color32,
     close_receiver: Receiver<()>,
     covers_monitor: bool,
+    layered_window_shown: bool,
 }
 
 impl Overlay {
@@ -128,6 +159,10 @@ impl eframe::App for Overlay {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        if !self.layered_window_shown {
+            show_layered_window();
+            self.layered_window_shown = true;
+        }
         if !self.covers_monitor {
             if let Some(monitor_size) = ui.ctx().input(|input| input.viewport().monitor_size) {
                 ui.ctx()
@@ -135,6 +170,9 @@ impl eframe::App for Overlay {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(monitor_size));
                 self.covers_monitor = true;
+                info!(?monitor_size, "overlay sized to the monitor");
+            } else {
+                debug!("overlay waiting for the monitor size");
             }
         }
         let painter = ui.painter();

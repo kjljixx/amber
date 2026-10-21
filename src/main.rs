@@ -771,9 +771,12 @@ fn main() -> std::process::ExitCode {
         any(target_os = "macos", target_os = "windows")
     ))]
     if let Some((message, accent, task)) = focus_overlay_message() {
+        // The parent discards this process's output, so errors go to the log.
+        let _ = amber::log::init(false);
         return match focus_overlay::run(message, accent, task) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
+                warn!(target: FOCUS_OVERLAY, %error, "overlay failed");
                 eprintln!("amber overlay: {error}");
                 std::process::ExitCode::FAILURE
             }
@@ -1236,8 +1239,8 @@ fn run() -> io::Result<()> {
                 match checker.poll(now) {
                     Some(FocusEvent::OffTask) => {
                         info!(target: FOCUS_OVERLAY, "off-task reminder");
-                        alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
                         if focus_overlay.is_none() {
+                            alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
                             match alarm::show_focus_overlay(
                                 OFF_TASK_TITLE,
                                 background.accent(),

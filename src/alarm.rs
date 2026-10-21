@@ -178,10 +178,7 @@ fn notifier(os: &str, title: &str, body: &str) -> Invocation {
                 quote(title),
                 quote(body)
             );
-            command(
-                "powershell",
-                &["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script],
-            )
+            command("powershell", &["-NoProfile", "-Command", &script])
         }
         _ => command("notify-send", &[title, body]),
     }
@@ -190,13 +187,21 @@ fn notifier(os: &str, title: &str, body: &str) -> Invocation {
 /// Run a command to completion with its output discarded. True if it ran and
 /// succeeded.
 fn run((program, args): &Invocation) -> bool {
-    Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Without this the helper shares the terminal's console, and
+        // PowerShell's `-WindowStyle` would act on the terminal window.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.status().is_ok_and(|status| status.success())
 }
 
 /// How a chime ended up being played.
@@ -505,7 +510,7 @@ mod tests {
         assert_eq!(windows.0, "powershell");
         let script = windows.1.last().unwrap();
         assert!(script.contains("ShowBalloonTip(10000, 'Pomodoro', 'it''s time',"));
-        assert!(windows.1.iter().any(|arg| arg == "Hidden"));
+        assert!(!windows.1.iter().any(|arg| arg == "-WindowStyle"));
     }
 
     #[test]
