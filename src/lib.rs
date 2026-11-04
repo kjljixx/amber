@@ -7,6 +7,7 @@ pub mod ambient;
 mod animation;
 pub mod audio;
 mod color;
+pub mod config;
 mod digits;
 #[cfg(feature = "focus-check")]
 pub mod focus;

@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+/amber.json
 /assets/phrases.txt
 lyrics.csv
 /clip-trace/

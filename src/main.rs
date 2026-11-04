@@ -65,6 +65,11 @@
 //! `cargo run --offline -- --alarm-test` plays both now, to check
 //! your sound and notification settings.
 //!
+//! Scheduled work: `amber.json` (or `--config FILE`; see `amber.example.json`)
+//! can list times of day, such as `{"scheduled_work": ["09:00"]}`. At each, every
+//! day, home switches to a task called "Productive Work", and a task that is
+//! paused resumes. A task that is already running is left alone.
+//!
 //! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
 //! docs/generation.md.
 use std::{
@@ -79,7 +84,9 @@ use amber::{
     Digits, Excitement, GradientView, Reactivity,
     ambient::{Ambient, Moment, Place},
     audio::Source,
-    blend_samples, darken_around,
+    blend_samples,
+    config::{self, Config, Schedule},
+    darken_around,
     generation::{GeneratedGradient, Generator},
     presets,
     tasks::{self, Loader, todoist::Todoist},
@@ -153,6 +160,8 @@ const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
 const SCRIM_ALPHA: f32 = 0.4;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
+/// The task that scheduled work starts at home.
+const SCHEDULED_TASK: &str = "Productive Work";
 const WHITE: [u8; 3] = [255, 255, 255];
 const PAUSED_ROSE: [u8; 3] = [255, 200, 200];
 const BREAK_MINT: [u8; 3] = [200, 255, 200];
@@ -749,6 +758,19 @@ fn alarm_test() -> io::Result<()> {
     Ok(())
 }
 
+/// Pause a running timer and the gradient with it, or resume them.
+fn toggle_pause(clock: &mut Clock, background: &mut GradientView, now: Instant) {
+    clock.toggle_pause(now);
+    info!(
+        paused = clock.is_paused(),
+        phase = ?clock.phase(),
+        "pause toggled"
+    );
+    let mut playback = background.playback();
+    playback.playing = !clock.is_paused();
+    background.set_playback(playback, now);
+}
+
 fn digits(text: &str) -> io::Result<Digits> {
     Digits::new(text, WHITE, ALPHA).map_err(io::Error::other)
 }
@@ -846,6 +868,9 @@ struct Options {
     focus_check: bool,
     /// Temporary, for testing contrast: start from the description "pure white".
     pure_white: bool,
+    /// The settings file, which must exist when named; `amber.json` is
+    /// read when it does.
+    config: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -860,13 +885,14 @@ impl Default for Options {
             todoist_filter: None,
             focus_check: cfg!(feature = "focus-check"),
             pure_white: false,
+            config: None,
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---no-todoist | --todoist-filter <query> | --no-focus-check | --pure-white | --debug | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --config <json file> | --no-focus-check | --pure-white | --debug | --list-audio | --alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -916,6 +942,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--tasks" => {
                 options.tasks = Some(PathBuf::from(value("a markdown file of tasks")?));
             }
+            "--config" => options.config = Some(PathBuf::from(value("a settings file")?)),
             "--sensitivity" => {
                 options.sensitivity = value("a number such as 2")?
                     .parse::<f32>()
@@ -928,7 +955,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         if inline.is_some()
             && !matches!(
                 name.as_str(),
-                "--location" | "--audio-from" | "--sensitivity" | "--tasks" | "--todoist-filter"
+                "--location"
+                    | "--audio-from"
+                    | "--sensitivity"
+                    | "--tasks"
+                    | "--todoist-filter"
+                    | "--config"
             )
         {
             return Err(format!("{name} takes no value; {USAGE}"));
@@ -1058,6 +1090,17 @@ fn run() -> io::Result<()> {
         halo_limit = HALO_LIMIT,
         "darkening around the digits and bars"
     );
+    let config = match &options.config {
+        Some(path) => Config::load(path, true),
+        None => Config::load(Path::new(config::DEFAULT_PATH), false),
+    }
+    .map_err(io::Error::other)?;
+    let mut schedule = Schedule::new(config.scheduled_work, Local::now().naive_local());
+    info!(
+        scheduled_task = SCHEDULED_TASK,
+        scheduled_times = schedule.len(),
+        "scheduled work configured"
+    );
     let start = Instant::now();
     let mut phases_completed = 0u32;
     let mut frames_drawn = 0u32;
@@ -1126,7 +1169,10 @@ fn run() -> io::Result<()> {
         loader.refresh();
     }
     let mut view = View::Home;
-    info!(?view, "starting at home; the pomodoro starts with the first task");
+    info!(
+        ?view,
+        "starting at home; the pomodoro starts with the first task"
+    );
     let mut clock = Clock::new(start);
     #[cfg(feature = "focus-check")]
     let mut focus_work_active = false;
@@ -1135,9 +1181,66 @@ fn run() -> io::Result<()> {
     let mut text = digits(&shown)?;
     text.set_color(shown_color);
     let mut redraw = true;
+    let mut selected: Option<String> = None;
+    let mut scheduled_start_waiting = false;
     let result = ratatui::run(|terminal| {
         loop {
             let now = Instant::now();
+            if let Some(due) = schedule.due(Local::now().naive_local()) {
+                info!(
+                    %due,
+                    ?view,
+                    paused = clock.is_paused(),
+                    "scheduled work is due"
+                );
+                match view {
+                    View::Home => scheduled_start_waiting = true,
+                    View::Task if clock.is_paused() => {
+                        toggle_pause(&mut clock, &mut background, now);
+                        notice = Some(Notice {
+                            text: format!("Scheduled work {}: resumed", clock_label(due)),
+                            until: now + NOTICE,
+                        });
+                        redraw = true;
+                    }
+                    View::Task => info!("a task is already running; scheduled work does nothing"),
+                }
+            }
+            // A request already in flight is waited out, so the task is not missed.
+            if scheduled_start_waiting && view != View::Home {
+                info!(?view, "left home before scheduled work could start");
+                scheduled_start_waiting = false;
+            } else if scheduled_start_waiting && !generator.is_pending() {
+                scheduled_start_waiting = false;
+                selected = Some(SCHEDULED_TASK.into());
+                notice = Some(Notice {
+                    text: format!("Scheduled work: starting {SCHEDULED_TASK}"),
+                    until: now + NOTICE,
+                });
+                redraw = true;
+            }
+            if let Some(chosen) = selected.take() {
+                #[cfg(feature = "focus-check")]
+                if let Some(checker) = focus_checker.as_mut() {
+                    checker.set_task(Some(chosen.clone()), Instant::now());
+                }
+                let description = gradient_description(&chosen, moment.as_ref());
+                let was_pending = generator.is_pending();
+                let cached = generator.submit(&description);
+                let started = cached.is_some() || (!was_pending && generator.is_pending());
+                if let Some(cached) = cached {
+                    apply(&mut background, &mut speed, &cached)?;
+                    task.started_for(chosen);
+                    task.succeeded();
+                } else if started {
+                    task.started_for(chosen);
+                }
+                if started && view == View::Home {
+                    view = View::Task;
+                    clock = Clock::new(Instant::now());
+                    info!(?view, "first task chosen; pomodoro reset and started");
+                }
+            }
             if view == View::Task && clock.advance(now) {
                 phases_completed += 1;
                 info!(
@@ -1375,6 +1478,7 @@ fn run() -> io::Result<()> {
                     || ambient.is_pending()
                     || loader.as_ref().is_some_and(Loader::is_pending))
                 .then_some(Duration::from_millis(25)),
+                schedule.until_next(Local::now().naive_local()),
                 // Opening a device can take a moment, and silence is judged by the clock.
                 listener.is_some().then_some(Duration::from_millis(50)),
                 notice
@@ -1429,30 +1533,7 @@ fn run() -> io::Result<()> {
                                 } else if let Some(chosen) =
                                     chosen.filter(|chosen| !chosen.is_empty())
                                 {
-                                    let chosen: String =
-                                        chosen.chars().take(MAX_TASK_CHARS).collect();
-                                    #[cfg(feature = "focus-check")]
-                                    if let Some(checker) = focus_checker.as_mut() {
-                                        checker.set_task(Some(chosen.clone()), Instant::now());
-                                    }
-                                    let description =
-                                        gradient_description(&chosen, moment.as_ref());
-                                    let was_pending = generator.is_pending();
-                                    let cached = generator.submit(&description);
-                                    let started = cached.is_some()
-                                        || (!was_pending && generator.is_pending());
-                                    if let Some(cached) = cached {
-                                        apply(&mut background, &mut speed, &cached)?;
-                                        task.started_for(chosen);
-                                        task.succeeded();
-                                    } else if started {
-                                        task.started_for(chosen);
-                                    }
-                                    if started && view == View::Home {
-                                        view = View::Task;
-                                        clock = Clock::new(Instant::now());
-                                        info!(?view, "first task chosen; pomodoro reset and started");
-                                    }
+                                    selected = Some(chosen.chars().take(MAX_TASK_CHARS).collect());
                                 }
                             }
                             KeyCode::Up | KeyCode::Down => {
@@ -1516,16 +1597,7 @@ fn run() -> io::Result<()> {
                                 });
                             }
                             KeyCode::Char(' ') if view == View::Task => {
-                                let now = Instant::now();
-                                clock.toggle_pause(now);
-                                info!(
-                                    paused = clock.is_paused(),
-                                    phase = ?clock.phase(),
-                                    "pause toggled"
-                                );
-                                let mut playback = background.playback();
-                                playback.playing = !clock.is_paused();
-                                background.set_playback(playback, now);
+                                toggle_pause(&mut clock, &mut background, Instant::now());
                             }
                             KeyCode::Char('r' | 'R') if view == View::Home => {
                                 let started = request_moment_gradient(
@@ -2305,6 +2377,20 @@ mod tests {
         assert_eq!(parse(&["--tasks=my list.md"]), with("my list.md"));
         assert!(parse(&["--tasks"]).is_err());
         assert!(parse(&["--tasks="]).is_err());
+    }
+
+    #[test]
+    fn the_command_line_names_a_settings_file() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        let with = |path: &str| {
+            Ok(Command::Clock(Options {
+                config: Some(PathBuf::from(path)),
+                ..Options::default()
+            }))
+        };
+        assert_eq!(parse(&["--config", "mine.json"]), with("mine.json"));
+        assert_eq!(parse(&["--config=mine.json"]), with("mine.json"));
+        assert!(parse(&["--config"]).is_err());
     }
 
     #[test]

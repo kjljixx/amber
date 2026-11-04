@@ -22,6 +22,16 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r scripts/req
 
 `scripts/01_download_lyrics.py` saves the full dataset as `lyrics.csv` (4.5 GB) if you want to browse it. Amber doesn't need that file.
 
+## Scheduled work
+
+Copy `amber.example.json` to `amber.json` (or pass `--config FILE`) and list times of day:
+
+```json
+{ "scheduled_work": ["09:00", "14:00"] }
+```
+
+At each time, every day: on the home screen Amber starts a task called "Productive Work"; on a paused task it resumes; otherwise it does nothing.
+
 ## Cool features
 On startup, a song lyric will be randomly chosen to be the seed for the gradient, based on the current time, season, weather, etc.
 
