@@ -15,10 +15,6 @@ use tracing::{info, warn};
 /// Where the settings are read from unless `--config` says otherwise.
 pub const DEFAULT_PATH: &str = "amber.json";
 
-/// A scheduled time that passed longer ago than this is skipped, such as one
-/// that went by while the machine slept.
-const GRACE: Duration = Duration::minutes(5);
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
@@ -68,7 +64,8 @@ impl Config {
 }
 
 /// Times of day that come round every day. Ask [`due`](Self::due) as often as
-/// is convenient: each time is reported once, on the first ask after it passes.
+/// is convenient: each time is reported once, on the first ask after it passes,
+/// even if that is late because the machine slept through it.
 #[derive(Debug)]
 pub struct Schedule {
     times: Vec<NaiveTime>,
@@ -98,9 +95,9 @@ impl Schedule {
         passed.sort();
         passed.dedup();
         let latest = passed.pop()?;
-        if now - latest > GRACE {
-            warn!(%latest, %now, "scheduled time went by too long ago; skipped");
-            return None;
+        let late_secs = (now - latest).num_seconds();
+        if late_secs > 60 {
+            warn!(%latest, %now, late_secs, "scheduled time was missed; reporting it late");
         }
         Some(latest.time())
     }
@@ -178,9 +175,9 @@ mod tests {
     }
 
     #[test]
-    fn a_time_that_went_by_while_asleep_is_skipped() {
+    fn a_time_that_went_by_while_asleep_is_reported_once_on_waking() {
         let mut schedule = Schedule::new(vec![time("09:00")], at("2026-11-03 08:00:00"));
-        assert_eq!(schedule.due(at("2026-11-03 11:00:00")), None);
+        assert_eq!(schedule.due(at("2026-11-03 11:00:00")), Some(time("09:00")));
         assert_eq!(schedule.due(at("2026-11-03 11:00:01")), None);
     }
 

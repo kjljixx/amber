@@ -11,7 +11,7 @@
 //! | `tasks.log` | `tasks`, `picker` |
 //! | `audio.log` | `audio` |
 //! | `focus.log` | `focus`, `focus_overlay` |
-//! | `amber.log` | `amber` itself, `alarm` |
+//! | `amber.log` | `amber` itself, `alarm`, `config` |
 //!
 //! Files are made when something is first written to them. The level is `info`;
 //! `--debug` (see [`take_debug_flag`]) makes it `debug`, and `RUST_LOG` can
@@ -80,7 +80,7 @@ impl Channel {
             (Some("amber"), Some("tasks" | "picker")) => Some(Channel::Tasks),
             (Some("amber"), Some("audio")) => Some(Channel::Audio),
             (Some("amber"), Some("focus" | "focus_overlay")) => Some(Channel::Focus),
-            (Some("amber"), None | Some("alarm" | "speed_control")) => Some(Channel::App),
+            (Some("amber"), None | Some("alarm" | "speed_control" | "config")) => Some(Channel::App),
             (Some("amber" | "jev" | "gradient"), _) => Some(Channel::Gradient),
             _ => None,
         }
@@ -211,6 +211,7 @@ mod tests {
             ("amber::focus", Channel::Focus),
             ("amber::focus_overlay", Channel::Focus),
             ("amber::alarm", Channel::App),
+            ("amber::config", Channel::App),
         ] {
             assert_eq!(Channel::of(target), Some(channel), "{target}");
         }
