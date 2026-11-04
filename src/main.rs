@@ -130,7 +130,7 @@ const DIM_ALPHA: f32 = 0.25;
 /// A white text at `ALPHA` is then at least 0.23 lighter than what is behind it.
 const HALO_RADIUS: u16 = 6;
 const HALO_LIMIT: f32 = 0.8;
-const STRONG_HALO_LIMIT: f32 = 0.65;
+const STRONG_HALO_LIMIT: f32 = 0.7;
 /// Gradient animation rate before Jev suggests one, in radians per second.
 const BASE_SPEED: f64 = 0.15;
 /// Speed steps above 1x at the start: each is a factor of the square root of
@@ -154,8 +154,8 @@ const SCRIM_ALPHA: f32 = 0.4;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 const WHITE: [u8; 3] = [255, 255, 255];
-const PAUSED_ROSE: [u8; 3] = [255, 150, 150];
-const BREAK_MINT: [u8; 3] = [150, 255, 150];
+const PAUSED_ROSE: [u8; 3] = [255, 200, 200];
+const BREAK_MINT: [u8; 3] = [200, 255, 200];
 const BLACK: [u8; 3] = [0, 0, 0];
 
 /// One stretch of the cycle. The number says which work period it is in or
