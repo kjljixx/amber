@@ -67,7 +67,7 @@
 //!
 //! Scheduled work: `amber.json` (or `--config FILE`; see `amber.example.json`)
 //! can list times of day, such as `{"scheduled_work": ["09:00"]}`. At each, every
-//! day, home switches to a task called "Productive Work", and a task that is
+//! day, home switches to a task called "Choose a task in Amber", and a task that is
 //! paused resumes. A task that is already running is left alone.
 //!
 //! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
@@ -161,7 +161,7 @@ const SCRIM_ALPHA: f32 = 0.4;
 const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 /// The task that scheduled work starts at home.
-const SCHEDULED_TASK: &str = "Productive Work";
+const SCHEDULED_TASK: &str = "Choose a task in Amber";
 const WHITE: [u8; 3] = [255, 255, 255];
 const PAUSED_ROSE: [u8; 3] = [255, 200, 200];
 const BREAK_MINT: [u8; 3] = [200, 255, 200];
