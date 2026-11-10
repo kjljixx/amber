@@ -27,6 +27,8 @@ const OFF_TASK_THRESHOLD: f64 = 0.5;
 
 pub const OFF_TASK_TITLE: &str = "Let's get back on track";
 pub const OFF_TASK_BODY: &str = "Don't get distracted. Stay focused on your task";
+pub const PAUSE_TITLE: &str = "Pauses are not meant for procrastination";
+pub const PAUSE_BODY: &str = "Get a snack, move a little, and let's get back to work";
 
 #[derive(Debug)]
 pub enum Event {

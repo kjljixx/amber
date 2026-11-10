@@ -330,6 +330,7 @@ pub fn show_focus_overlay(
     message: &str,
     accent: Option<amber::Rgb>,
     task: Option<&str>,
+    body: Option<&str>,
 ) -> std::io::Result<Option<FocusOverlay>> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -340,6 +341,9 @@ pub fn show_focus_overlay(
         }
         if let Some(task) = task {
             command.args(["--task", task]);
+        }
+        if let Some(body) = body {
+            command.args(["--body", body]);
         }
         command
             .stdin(Stdio::piped())
@@ -360,7 +364,7 @@ pub fn show_focus_overlay(
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (message, accent, task);
+        let _ = (message, accent, task, body);
         Ok(None)
     }
 }

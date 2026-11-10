@@ -85,6 +85,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "ureq",
+ "winit",
  "xcap",
 ]
 

@@ -25,11 +25,14 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30", default-features = false, optional = true }
+
 [features]
 default = ["generation", "audio", "focus-check"]
 generation = ["dep:ureq", "dep:getrandom"]
 audio = ["dep:cpal", "dep:hound", "dep:base64"]
-focus-check = ["generation", "dep:base64", "dep:image", "dep:xcap", "dep:eframe"]
+focus-check = ["generation", "dep:base64", "dep:image", "dep:xcap", "dep:eframe", "dep:winit"]
 
 [[bin]]
 name = "jev"

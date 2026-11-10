@@ -6,15 +6,18 @@
 //! Choosing a task with `t` moves to the task view, a pomodoro clock with four
 //! bars along the bottom showing which work period of the cycle this is. The
 //! clock starts from 25:00 at that point, and the focus checker only runs
-//! here. Pressing Enter on an empty prompt (the "Back to Home" row) resets the
-//! clock and goes back to home.
+//! here. To go back home, press `t` and type the current time (`14:37`, `2:37`
+//! or `2:37pm`, give or take a minute); only then does a "Back to Home" row
+//! appear, and Enter on it resets the clock and goes back to home.
 //!
 //! The cycle is work, 5 minute break, three times over, then a fourth work
 //! period and a 20 minute break, and then it starts again.
 //!
 //! `cargo run --offline`
 //! t: choose the task, in a fresh box (Enter takes it, Esc cancels) | Space:
-//! pause or resume the timer and the gradient | r: back to the start of the
+//! pause or resume the timer and the gradient (leaving Amber while paused
+//! covers the screen with "Pauses are not meant for procrastination" until
+//! you return; this needs a terminal that reports focus) | r: back to the start of the
 //! cycle, 25:00 (Space and r work in the task view) | Ctrl+C: quit (q and Esc
 //! never quit)
 //!
@@ -79,7 +82,9 @@ use std::{
 };
 
 #[cfg(feature = "focus-check")]
-use amber::focus::{Event as FocusEvent, FocusChecker, OFF_TASK_BODY, OFF_TASK_TITLE};
+use amber::focus::{
+    Event as FocusEvent, FocusChecker, OFF_TASK_BODY, OFF_TASK_TITLE, PAUSE_BODY, PAUSE_TITLE,
+};
 use amber::{
     Digits, Excitement, GradientView, Reactivity,
     ambient::{Ambient, Moment, Place},
@@ -152,6 +157,10 @@ const CALM_FRAME: Duration = Duration::from_millis(50);
 const LIVELY_FRAME: Duration = Duration::from_millis(33);
 /// How long a message about the audio stays at the top.
 const NOTICE: Duration = Duration::from_secs(4);
+/// While paused and away from Amber, how often the pause overlay is checked
+/// and reopened if it is gone, as the off-task overlay is.
+#[cfg(feature = "focus-check")]
+const PAUSE_OVERLAY_INTERVAL: Duration = Duration::from_secs(5);
 /// How long to listen to silence before suggesting something is wrong.
 #[cfg(feature = "audio")]
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(8);
@@ -291,6 +300,35 @@ fn label(remaining: Duration) -> String {
 /// `hh:mm` on a 24 hour clock.
 fn clock_label(time: NaiveTime) -> String {
     format!("{:02}:{:02}", time.hour(), time.minute())
+}
+
+/// The minutes typed either side of the real time that still count as the time.
+const TYPED_TIME_TOLERANCE: u32 = 1;
+
+/// Whether `text` is the time of day: `None` when it is not a time (`h:mm`,
+/// `hh:mm`, with an optional `am` or `pm`), otherwise whether it is within a
+/// minute of `now`. Without `am` or `pm` the hour is read on a 12 hour clock,
+/// so `14:37` and `2:37` both match 14:37.
+fn typed_time_is_now(text: &str, now: NaiveTime) -> Option<bool> {
+    let lowered = text.trim().to_lowercase();
+    let (digits, pm) = if let Some(rest) = lowered.strip_suffix("pm") {
+        (rest, Some(true))
+    } else if let Some(rest) = lowered.strip_suffix("am") {
+        (rest, Some(false))
+    } else {
+        (lowered.as_str(), None)
+    };
+    let (hour, minute) = digits.split_once(':')?;
+    let (hour, minute): (u32, u32) = (hour.trim().parse().ok()?, minute.trim().parse().ok()?);
+    let (typed, period) = match pm {
+        Some(pm) if (1..=12).contains(&hour) && minute < 60 => {
+            ((hour % 12 + if pm { 12 } else { 0 }) * 60 + minute, 24 * 60)
+        }
+        None if hour < 24 && minute < 60 => ((hour % 12) * 60 + minute, 12 * 60),
+        _ => return Some(false),
+    };
+    let apart = (typed + period - (now.hour() * 60 + now.minute()) % period) % period;
+    Some(apart.min(period - apart) <= TYPED_TIME_TOLERANCE)
 }
 
 /// How long until `clock_label` shows a different value.
@@ -792,10 +830,10 @@ fn main() -> std::process::ExitCode {
         feature = "focus-check",
         any(target_os = "macos", target_os = "windows")
     ))]
-    if let Some((message, accent, task)) = focus_overlay_message() {
+    if let Some((message, accent, task, body)) = focus_overlay_message() {
         // The parent discards this process's output, so errors go to the log.
         let _ = amber::log::init(false);
-        return match focus_overlay::run(message, accent, task) {
+        return match focus_overlay::run(message, accent, task, body) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 warn!(target: FOCUS_OVERLAY, %error, "overlay failed");
@@ -818,13 +856,14 @@ fn main() -> std::process::ExitCode {
     feature = "focus-check",
     any(target_os = "macos", target_os = "windows")
 ))]
-fn focus_overlay_message() -> Option<(String, Option<amber::Rgb>, Option<String>)> {
+fn focus_overlay_message(
+) -> Option<(String, Option<amber::Rgb>, Option<String>, Option<String>)> {
     let mut args = std::env::args().skip(1);
     if args.next()?.as_str() != "--focus-overlay" {
         return None;
     }
     let message = args.next().unwrap_or_else(|| OFF_TASK_TITLE.into());
-    let (mut accent, mut task) = (None, None);
+    let (mut accent, mut task, mut body) = (None, None, None);
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--accent" => {
@@ -834,10 +873,35 @@ fn focus_overlay_message() -> Option<(String, Option<amber::Rgb>, Option<String>
                 });
             }
             "--task" => task = args.next(),
+            "--body" => body = args.next(),
             _ => {}
         }
     }
-    Some((message, accent, task))
+    Some((message, accent, task, body))
+}
+
+/// Show the overlay, logging when it cannot be shown.
+#[cfg(feature = "focus-check")]
+fn open_focus_overlay(
+    title: &str,
+    accent: Option<amber::Rgb>,
+    task: Option<&str>,
+    body: Option<&str>,
+) -> Option<alarm::FocusOverlay> {
+    match alarm::show_focus_overlay(title, accent, task, body) {
+        Ok(Some(overlay)) => {
+            info!(target: FOCUS_OVERLAY, title, "overlay opened");
+            Some(overlay)
+        }
+        Ok(None) => {
+            info!(target: FOCUS_OVERLAY, "overlay unavailable on this platform");
+            None
+        }
+        Err(error) => {
+            warn!(target: FOCUS_OVERLAY, %error, "overlay could not open");
+            None
+        }
+    }
 }
 
 /// What the command line asks for.
@@ -1134,6 +1198,12 @@ fn run() -> io::Result<()> {
     };
     #[cfg(feature = "focus-check")]
     let mut focus_overlay: Option<alarm::FocusOverlay> = None;
+    #[cfg(feature = "focus-check")]
+    let mut pause_overlay: Option<alarm::FocusOverlay> = None;
+    #[cfg(feature = "focus-check")]
+    let mut terminal_focused = true;
+    #[cfg(feature = "focus-check")]
+    let mut next_pause_overlay_check: Option<Instant> = None;
     #[cfg(not(feature = "focus-check"))]
     if options.focus_check {
         return Err(io::Error::other("rebuild Amber with the focus-check feature").into());
@@ -1183,6 +1253,14 @@ fn run() -> io::Result<()> {
     let mut redraw = true;
     let mut selected: Option<String> = None;
     let mut scheduled_start_waiting = false;
+    #[cfg(feature = "focus-check")]
+    match crossterm::execute!(io::stdout(), crossterm::event::EnableFocusChange) {
+        Ok(()) => info!(
+            target: FOCUS_OVERLAY,
+            "terminal focus reporting on; a terminal that cannot report focus never shows the pause overlay"
+        ),
+        Err(error) => warn!(target: FOCUS_OVERLAY, %error, "terminal focus reporting could not be turned on"),
+    }
     let result = ratatui::run(|terminal| {
         loop {
             let now = Instant::now();
@@ -1281,6 +1359,31 @@ fn run() -> io::Result<()> {
                     }
                 }
             }
+            #[cfg(feature = "focus-check")]
+            {
+                let away_while_paused =
+                    view == View::Task && clock.is_paused() && !terminal_focused;
+                if !away_while_paused {
+                    next_pause_overlay_check = None;
+                    if let Some(overlay) = pause_overlay.take() {
+                        info!(target: FOCUS_OVERLAY, reason = "back_in_amber_or_unpaused", "pause overlay closed");
+                        overlay.close();
+                    }
+                } else if next_pause_overlay_check.is_some_and(|at| now >= at) {
+                    next_pause_overlay_check = Some(now + PAUSE_OVERLAY_INTERVAL);
+                    let previous = pause_overlay.take();
+                    pause_overlay = open_focus_overlay(
+                        PAUSE_TITLE,
+                        background.accent(),
+                        None,
+                        Some(PAUSE_BODY),
+                    );
+                    info!(target: FOCUS_OVERLAY, replaced_previous = previous.is_some(), reopened = pause_overlay.is_some(), "pause overlay reapplied");
+                    if let Some(previous) = previous {
+                        previous.close();
+                    }
+                }
+            }
             if let Some(found) = ambient.poll() {
                 moment = Some(found);
                 // Start from a gradient for the moment, unless a description has
@@ -1344,22 +1447,12 @@ fn run() -> io::Result<()> {
                         info!(target: FOCUS_OVERLAY, "off-task reminder");
                         if focus_overlay.is_none() {
                             alarm::notify(OFF_TASK_TITLE, OFF_TASK_BODY);
-                            match alarm::show_focus_overlay(
+                            focus_overlay = open_focus_overlay(
                                 OFF_TASK_TITLE,
                                 background.accent(),
                                 checker.task(),
-                            ) {
-                                Ok(Some(overlay)) => {
-                                    info!(target: FOCUS_OVERLAY, "overlay opened");
-                                    focus_overlay = Some(overlay);
-                                }
-                                Ok(None) => {
-                                    info!(target: FOCUS_OVERLAY, "overlay unavailable on this platform");
-                                }
-                                Err(error) => {
-                                    warn!(target: FOCUS_OVERLAY, %error, "overlay could not open");
-                                }
-                            }
+                                None,
+                            );
                         } else {
                             debug!(target: FOCUS_OVERLAY, "overlay already open");
                         }
@@ -1488,6 +1581,8 @@ fn run() -> io::Result<()> {
                 focus_checker
                     .as_ref()
                     .and_then(|checker| checker.time_until_next(Instant::now())),
+                #[cfg(feature = "focus-check")]
+                next_pause_overlay_check.map(|at| at.saturating_duration_since(Instant::now())),
             ]
             .into_iter()
             .flatten()
@@ -1513,7 +1608,11 @@ fn run() -> io::Result<()> {
                                     Some(picker) => picker.choose(&task.text),
                                     None => Some(task.text.trim().to_owned()),
                                 };
-                                if view == View::Task && chosen.as_deref().is_none_or(str::is_empty) {
+                                let going_home = view == View::Task
+                                    && chosen.as_deref() == Some("")
+                                    && typed_time_is_now(&task.text, Local::now().time())
+                                        == Some(true);
+                                if going_home {
                                     view = View::Home;
                                     task.cancel();
                                     clock = Clock::new(Instant::now());
@@ -1529,7 +1628,7 @@ fn run() -> io::Result<()> {
                                         &mut generator,
                                         moment.as_ref(),
                                     );
-                                    info!(?view, "empty prompt; pomodoro reset, back to home");
+                                    info!(?view, "current time typed; pomodoro reset, back to home");
                                 } else if let Some(chosen) =
                                     chosen.filter(|chosen| !chosen.is_empty())
                                 {
@@ -1624,10 +1723,25 @@ fn run() -> io::Result<()> {
                     redraw = true;
                 }
                 Event::Resize(_, _) => redraw = true,
+                #[cfg(feature = "focus-check")]
+                Event::FocusLost => {
+                    terminal_focused = false;
+                    next_pause_overlay_check = Some(Instant::now());
+                    info!(target: FOCUS_OVERLAY, paused = clock.is_paused(), ?view, "left Amber");
+                }
+                #[cfg(feature = "focus-check")]
+                Event::FocusGained => {
+                    terminal_focused = true;
+                    info!(target: FOCUS_OVERLAY, "back in Amber");
+                }
                 _ => {}
             }
         }
     });
+    #[cfg(feature = "focus-check")]
+    if let Err(error) = crossterm::execute!(io::stdout(), crossterm::event::DisableFocusChange) {
+        warn!(target: FOCUS_OVERLAY, %error, "terminal focus reporting could not be turned off");
+    }
     info!(
         elapsed_secs = start.elapsed().as_secs(),
         phases_completed,
@@ -1658,6 +1772,36 @@ mod tests {
         let now = start + elapsed;
         clock.advance(now);
         (clock, now)
+    }
+
+    fn time(hour: u32, minute: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
+    }
+
+    #[test]
+    fn a_typed_time_matches_within_a_minute_in_either_clock_style() {
+        let now = time(14, 37);
+        for typed in ["14:37", "2:37", "02:37", " 14:38 ", "14:36", "2:37pm", "2:37 PM"] {
+            assert_eq!(typed_time_is_now(typed, now), Some(true), "{typed}");
+        }
+        for typed in ["14:39", "14:35", "2:37am", "15:37", "25:00", "14:61", "0:37pm"] {
+            assert_eq!(typed_time_is_now(typed, now), Some(false), "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_typed_time_wraps_around_midnight_and_noon() {
+        assert_eq!(typed_time_is_now("23:59", time(0, 0)), Some(true));
+        assert_eq!(typed_time_is_now("12:00am", time(0, 0)), Some(true));
+        assert_eq!(typed_time_is_now("12:00pm", time(12, 0)), Some(true));
+        assert_eq!(typed_time_is_now("12:00am", time(12, 0)), Some(false));
+    }
+
+    #[test]
+    fn text_that_is_not_a_time_is_left_to_be_a_task() {
+        for typed in ["", "write the report", "3 emails", "meet at 3:30", "14:", ":30"] {
+            assert_eq!(typed_time_is_now(typed, time(14, 37)), None, "{typed}");
+        }
     }
 
     #[test]

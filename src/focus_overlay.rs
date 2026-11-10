@@ -1,4 +1,5 @@
-//! Small desktop overlay shown after consecutive off-task decisions.
+//! Small desktop overlay shown after consecutive off-task decisions, or when
+//! the user leaves Amber during a pause.
 
 use std::{
     io::BufRead,
@@ -45,7 +46,24 @@ fn show_layered_window() {
 #[cfg(not(target_os = "windows"))]
 fn show_layered_window() {}
 
-pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe::Result {
+/// winit activates a macOS app when it launches, so the overlay would become
+/// the frontmost app. Quitting it then hands focus back to whichever app was
+/// in front before it opened, taking it from the terminal the user just chose.
+#[cfg(target_os = "macos")]
+fn keep_other_app_in_front(builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>) {
+    use winit::platform::macos::EventLoopBuilderExtMacOS;
+    builder.with_activate_ignoring_other_apps(false);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keep_other_app_in_front(_builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>) {}
+
+pub fn run(
+    message: String,
+    accent: Option<Rgb>,
+    task: Option<String>,
+    body: Option<String>,
+) -> eframe::Result {
     // The parent can close stdin when it decides the screen is back on task.
     // Keeping this read off the UI thread leaves the window responsive.
     let (close_sender, close_receiver) = mpsc::channel();
@@ -54,8 +72,9 @@ pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe
         let _ = stdin.lock().read_line(&mut String::new());
         let _ = close_sender.send(());
     });
-    info!(message, task = ?task, has_accent = accent.is_some(), "overlay starting");
+    info!(message, task = ?task, body = ?body, has_accent = accent.is_some(), "overlay starting");
     let options = eframe::NativeOptions {
+        event_loop_builder: Some(Box::new(|builder| keep_other_app_in_front(builder))),
         viewport: ViewportBuilder::default()
             .with_title(TITLE)
             .with_decorations(false)
@@ -75,6 +94,7 @@ pub fn run(message: String, accent: Option<Rgb>, task: Option<String>) -> eframe
             Ok(Box::new(Overlay {
                 message,
                 task,
+                body,
                 accent: accent.map_or(Color32::WHITE, |[red, green, blue]| {
                     Color32::from_rgb(red, green, blue)
                 }),
@@ -123,6 +143,7 @@ fn install_font(context: &egui::Context) {
 struct Overlay {
     message: String,
     task: Option<String>,
+    body: Option<String>,
     accent: Color32,
     close_receiver: Receiver<()>,
     covers_monitor: bool,
@@ -134,12 +155,13 @@ impl Overlay {
         let font = egui::FontId::new(30.0, egui::FontFamily::Proportional);
         let format = |color| egui::TextFormat::simple(font.clone(), color);
         let mut job = egui::text::LayoutJob::default();
-        match &self.task {
-            Some(task) => {
+        match (&self.body, &self.task) {
+            (Some(body), _) => job.append(body, 0.0, format(BODY_COLOR)),
+            (None, Some(task)) => {
                 job.append(BODY_PREFIX, 0.0, format(BODY_COLOR));
                 job.append(task, 0.0, format(self.accent));
             }
-            None => job.append(OFF_TASK_BODY, 0.0, format(BODY_COLOR)),
+            (None, None) => job.append(OFF_TASK_BODY, 0.0, format(BODY_COLOR)),
         }
         job.wrap = egui::text::TextWrapping {
             max_rows: 2,

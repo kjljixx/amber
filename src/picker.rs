@@ -14,7 +14,7 @@ use ratatui::{
 use tracing::{debug, info};
 use unicode_width::UnicodeWidthStr;
 
-use super::{BLACK, fit, put_text};
+use super::{BLACK, fit, put_text, typed_time_is_now};
 
 /// Most rows shown at once.
 const MAX_ROWS: usize = 8;
@@ -45,7 +45,8 @@ pub struct Picker {
     offset: usize,
     /// The day due dates are said relative to.
     today: NaiveDate,
-    /// Whether an empty box lists "Back to Home" first, which chooses nothing.
+    /// Whether "Back to Home", which chooses nothing, is listed first once the
+    /// box holds the current time.
     offer_home: bool,
 }
 
@@ -62,8 +63,8 @@ impl Picker {
         }
     }
 
-    /// With `offer`, an empty box lists a first row that chooses no task, for
-    /// going back to the home view.
+    /// With `offer`, a box holding the current time lists a first row that
+    /// chooses no task, for going back to the home view.
     pub fn offer_home(&mut self, offer: bool) {
         self.offer_home = offer;
     }
@@ -76,12 +77,17 @@ impl Picker {
     }
 
     /// The tasks that match `query`, then, when something has been typed, a row
-    /// for using it as it is. With nothing typed, the row for no task comes
-    /// first when it is offered.
+    /// for using it as it is. When "Back to Home" is offered and the current
+    /// time is typed, that row comes first and the text is not offered as a task;
+    /// any other time typed then lists no row of its own.
     fn rows(&self, query: &str) -> Vec<Row> {
         let typed = query.trim();
         let mut rows: Vec<Row> = Vec::new();
-        if typed.is_empty() && self.offer_home {
+        let time_typed = self
+            .offer_home
+            .then(|| typed_time_is_now(typed, Local::now().time()))
+            .flatten();
+        if time_typed == Some(true) {
             rows.push(Row {
                 label: "Back to Home".into(),
                 details: Vec::new(),
@@ -93,7 +99,7 @@ impl Picker {
             details: task.details(self.today),
             choice: task.title.clone(),
         }));
-        if !typed.is_empty() {
+        if !typed.is_empty() && time_typed.is_none() {
             rows.push(Row {
                 label: format!("Use “{typed}”"),
                 details: Vec::new(),
@@ -217,7 +223,10 @@ impl Picker {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Timelike;
+
     use super::*;
+    use crate::clock_label;
 
     fn task(title: &str, group: Option<&str>) -> Task {
         Task {
@@ -258,15 +267,27 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_box_can_offer_back_to_home_first_and_typing_removes_it() {
+    fn back_to_home_is_offered_only_once_the_current_time_is_typed() {
         let mut picker = picker();
         picker.offer_home(true);
         assert_eq!(
             labels(&picker, ""),
-            ["Back to Home", "write the report", "email Sam", "water the plants"]
+            ["write the report", "email Sam", "water the plants"]
         );
-        assert_eq!(picker.choose("").as_deref(), Some(""));
         assert_eq!(labels(&picker, "sam"), ["email Sam", "Use “sam”"]);
+        let now = clock_label(Local::now().time());
+        assert_eq!(labels(&picker, &now), ["Back to Home"]);
+        assert_eq!(picker.choose(&now).as_deref(), Some(""));
+        let hour = (Local::now().time().hour() + 6) % 24;
+        assert!(labels(&picker, &format!("{hour:02}:30")).is_empty());
+        assert_eq!(picker.choose(&format!("{hour:02}:30")), None);
+    }
+
+    #[test]
+    fn a_time_is_an_ordinary_task_when_back_to_home_is_not_offered() {
+        let picker = picker();
+        let now = clock_label(Local::now().time());
+        assert_eq!(labels(&picker, &now), [format!("Use “{now}”")]);
     }
 
     #[test]
