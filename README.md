@@ -32,6 +32,20 @@ Copy `amber.example.json` to `amber.json` (or pass `--config FILE`) and list tim
 
 At each time, every day: on the home screen Amber starts a task called "Choose a task in Amber"; on a paused task it resumes; otherwise it does nothing.
 
+## Sync across computers
+
+Put the same `SYNC_SECRET` in `.env` on every computer, then start each with `--sync`:
+
+```sh
+cargo run -- --sync
+```
+
+The first one to start is the primary. The others find it on the local network and mirror its timer, task and gradient. Pause, reset, choosing a task and going home work from any of them; the primary acts on them. Scheduled work runs on the primary only, and every computer shows when it starts. Audio, the gradient's animation and the focus check stay on each computer.
+
+If the primary stops, a follower takes over within a few seconds. If two primaries meet again, for example after a laptop wakes, the group that was used last stays primary. Using Amber on any computer counts: pausing, resetting, choosing a task or opening the task menu. If nobody used anything, the original primary stays. If computers cannot find each other, name one with `--sync-peer <host>`; `--sync-port <number>` changes the port (default 47821). Sync logs go to `sync.log`.
+
+Sync is not encrypted, and the secret crosses the network as plain text. Use it on a network you trust. See `docs/sync-plan.html` for the plan to harden it.
+
 ## Cool features
 On startup, a song lyric will be randomly chosen to be the seed for the gradient, based on the current time, season, weather, etc.
 

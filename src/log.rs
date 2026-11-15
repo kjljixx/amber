@@ -11,6 +11,7 @@
 //! | `tasks.log` | `tasks`, `picker` |
 //! | `audio.log` | `audio` |
 //! | `focus.log` | `focus`, `focus_overlay` |
+//! | `sync.log` | `sync` |
 //! | `amber.log` | `amber` itself, `alarm`, `config` |
 //!
 //! Files are made when something is first written to them. The level is `info`;
@@ -48,15 +49,17 @@ pub enum Channel {
     Tasks,
     Audio,
     Focus,
+    Sync,
     App,
 }
 
 impl Channel {
-    pub const ALL: [Channel; 5] = [
+    pub const ALL: [Channel; 6] = [
         Channel::Gradient,
         Channel::Tasks,
         Channel::Audio,
         Channel::Focus,
+        Channel::Sync,
         Channel::App,
     ];
 
@@ -66,6 +69,7 @@ impl Channel {
             Channel::Tasks => "tasks.log",
             Channel::Audio => "audio.log",
             Channel::Focus => "focus.log",
+            Channel::Sync => "sync.log",
             Channel::App => "amber.log",
         }
     }
@@ -80,6 +84,7 @@ impl Channel {
             (Some("amber"), Some("tasks" | "picker")) => Some(Channel::Tasks),
             (Some("amber"), Some("audio")) => Some(Channel::Audio),
             (Some("amber"), Some("focus" | "focus_overlay")) => Some(Channel::Focus),
+            (Some("amber"), Some("sync")) => Some(Channel::Sync),
             (Some("amber"), None | Some("alarm" | "speed_control" | "config")) => Some(Channel::App),
             (Some("amber" | "jev" | "gradient"), _) => Some(Channel::Gradient),
             _ => None,
@@ -210,6 +215,7 @@ mod tests {
             ("amber::audio", Channel::Audio),
             ("amber::focus", Channel::Focus),
             ("amber::focus_overlay", Channel::Focus),
+            ("amber::sync::primary", Channel::Sync),
             ("amber::alarm", Channel::App),
             ("amber::config", Channel::App),
         ] {

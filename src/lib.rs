@@ -23,6 +23,8 @@ pub mod phrases;
 pub mod presets;
 mod recipe;
 pub mod scene;
+#[cfg(feature = "generation")]
+pub mod sync;
 pub mod tasks;
 mod view;
 mod warp;
