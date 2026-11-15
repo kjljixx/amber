@@ -94,6 +94,7 @@ use amber::{
     darken_around,
     generation::{GeneratedGradient, Generator},
     presets,
+    sync::{self, ClockWire, GradientWire, Inbound, Link, PhaseWire, Request, Shared, ViewWire},
     tasks::{self, Loader, todoist::Todoist},
 };
 use chrono::{Local, NaiveTime, Timelike};
@@ -200,6 +201,24 @@ impl Phase {
             Self::Break(n) => Self::Work(n + 1),
         }
     }
+
+    fn to_wire(self) -> PhaseWire {
+        match self {
+            Self::Work(period) => PhaseWire { work: true, period },
+            Self::Break(period) => PhaseWire { work: false, period },
+        }
+    }
+
+    /// `None` for a period outside the cycle, which only a broken peer sends.
+    fn from_wire(wire: PhaseWire) -> Option<Self> {
+        (1..=WORK_PERIODS).contains(&wire.period).then(|| {
+            if wire.work {
+                Self::Work(wire.period)
+            } else {
+                Self::Break(wire.period)
+            }
+        })
+    }
 }
 
 /// What the screen is for. Home is the ambient view: the lyric over the gradient
@@ -208,6 +227,22 @@ impl Phase {
 enum View {
     Home,
     Task,
+}
+
+impl View {
+    fn to_wire(self) -> ViewWire {
+        match self {
+            Self::Home => ViewWire::Home,
+            Self::Task => ViewWire::Task,
+        }
+    }
+
+    fn from_wire(wire: ViewWire) -> Self {
+        match wire {
+            ViewWire::Home => Self::Home,
+            ViewWire::Task => Self::Task,
+        }
+    }
 }
 
 /// Counts down through the cycle, moving on to the next phase as each one ends.
@@ -260,6 +295,21 @@ impl Clock {
     fn progress(&self, now: Instant) -> f32 {
         let length = self.phase.length().as_secs_f32();
         (1.0 - self.remaining(now).as_secs_f32() / length).clamp(0.0, 1.0)
+    }
+
+    fn wire(&self, now: Instant) -> ClockWire {
+        ClockWire {
+            paused: self.is_paused(),
+            remaining_ms: u64::try_from(self.remaining(now).as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// Take the phase and the time left that the primary reports.
+    fn mirror(&mut self, phase: Phase, clock: ClockWire, now: Instant) {
+        let remaining = Duration::from_millis(clock.remaining_ms).min(phase.length());
+        self.phase = phase;
+        self.deadline = now + remaining;
+        self.paused = clock.paused.then_some(remaining);
     }
 
     fn toggle_pause(&mut self, now: Instant) {
@@ -686,10 +736,44 @@ fn apply(
     speed: &mut SpeedControl,
     gradient: &GeneratedGradient,
 ) -> io::Result<()> {
+    apply_wire(view, speed, &GradientWire::from(gradient))
+}
+
+/// [`apply`] for a gradient that came over the network, whose numbers may be
+/// anything.
+fn apply_wire(
+    view: &mut GradientView,
+    speed: &mut SpeedControl,
+    gradient: &GradientWire,
+) -> io::Result<()> {
+    if !gradient.radians_per_second.is_finite() || !gradient.energy.is_finite() {
+        return Err(io::Error::other("the gradient's speed or energy is not a number"));
+    }
     view.set_recipe(&gradient.recipe)
         .map_err(io::Error::other)?;
-    view.set_reactivity(reactivity_for(gradient.design.energy));
+    view.set_reactivity(reactivity_for(gradient.energy));
     speed.set_base(gradient.radians_per_second, view)
+}
+
+/// What the primary tells followers about the screen.
+fn shared_state(
+    view: View,
+    clock: &Clock,
+    task: &TaskLine,
+    title: Option<&String>,
+    now: Instant,
+) -> Shared {
+    Shared {
+        view: view.to_wire(),
+        phase: clock.phase().to_wire(),
+        clock: clock.wire(now),
+        caption: task.shown.clone(),
+        task: title.cloned(),
+    }
+}
+
+fn capped(text: String) -> String {
+    text.chars().take(MAX_TASK_CHARS).collect()
 }
 
 /// How hard sound pushes the picture: the warp and the steering follow Jev's
@@ -909,6 +993,7 @@ fn open_focus_overlay(
 enum Command {
     AlarmTest,
     ListAudio,
+    SyncKeygen,
     Clock(Options),
 }
 
@@ -935,6 +1020,13 @@ struct Options {
     /// The settings file, which must exist when named; `amber.json` is
     /// read when it does.
     config: Option<PathBuf>,
+    /// Share the timer, the task and the gradient with other machines on the
+    /// network. On by default, but only when a key, `SYNC_SECRET`, is set; it is
+    /// read apart from the options.
+    sync: bool,
+    sync_port: u16,
+    /// A machine to ask for the primary, when broadcasts do not get through.
+    sync_peer: Option<String>,
 }
 
 impl Default for Options {
@@ -950,13 +1042,18 @@ impl Default for Options {
             focus_check: cfg!(feature = "focus-check"),
             pure_white: false,
             config: None,
+            sync: true,
+            sync_port: sync::DEFAULT_PORT,
+            sync_peer: None,
         }
     }
 }
 
 const USAGE: &str = "options: --location <city> | --no-weather | --no-audio | \
 --audio-from <system|mic|device> | --sensitivity <number> | --tasks <markdown file> | \
---no-todoist | --todoist-filter <query> | --config <json file> | --no-focus-check | --pure-white | --debug | --list-audio | --alarm-test";
+--no-todoist | --todoist-filter <query> | --config <json file> | --no-sync | --sync-port <number> | \
+--sync-peer <host> | --sync-keygen | --no-focus-check | --pure-white | --debug | --list-audio | \
+--alarm-test";
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
@@ -977,6 +1074,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         match name.as_str() {
             "--alarm-test" => return Ok(Command::AlarmTest),
             "--list-audio" => return Ok(Command::ListAudio),
+            "--sync-keygen" => return Ok(Command::SyncKeygen),
             "--no-focus-check" => options.focus_check = false,
             "--pure-white" => options.pure_white = true,
             "--no-weather" => options.place = None,
@@ -1007,6 +1105,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
                 options.tasks = Some(PathBuf::from(value("a markdown file of tasks")?));
             }
             "--config" => options.config = Some(PathBuf::from(value("a settings file")?)),
+            "--no-sync" => options.sync = false,
+            "--sync-port" => {
+                options.sync_port = value("a port number such as 47821")?
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port > 0)
+                    .ok_or("--sync-port needs a port number such as 47821")?;
+            }
+            "--sync-peer" => {
+                options.sync_peer = Some(value("a machine's name or address")?);
+            }
             "--sensitivity" => {
                 options.sensitivity = value("a number such as 2")?
                     .parse::<f32>()
@@ -1025,6 +1134,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
                     | "--tasks"
                     | "--todoist-filter"
                     | "--config"
+                    | "--sync-port"
+                    | "--sync-peer"
             )
         {
             return Err(format!("{name} takes no value; {USAGE}"));
@@ -1118,6 +1229,14 @@ impl Listener {
     }
 }
 
+/// Print a new sync key, alone on a line so it can be piped, and say where it goes.
+fn sync_keygen() -> io::Result<()> {
+    let key = sync::Key::generate().map_err(io::Error::other)?;
+    println!("{}", key.to_hex());
+    eprintln!("Put this in .env on every machine as SYNC_SECRET=<key>. Sync then starts by itself.");
+    Ok(())
+}
+
 fn list_audio() -> io::Result<()> {
     #[cfg(feature = "audio")]
     {
@@ -1141,6 +1260,7 @@ fn run() -> io::Result<()> {
     let options = match parse_args(args).map_err(io::Error::other)? {
         Command::AlarmTest => return alarm_test(),
         Command::ListAudio => return list_audio(),
+        Command::SyncKeygen => return sync_keygen(),
         Command::Clock(options) => options,
     };
     let log_directory = amber::log::init(debug)?;
@@ -1165,6 +1285,25 @@ fn run() -> io::Result<()> {
         scheduled_times = schedule.len(),
         "scheduled work configured"
     );
+    let sync_settings = if options.sync {
+        sync::Settings::from_env(
+            Path::new(".env"),
+            options.sync_port,
+            options.sync_peer.clone(),
+        )
+        .map_err(io::Error::other)?
+    } else {
+        info!("sync is off: --no-sync was given");
+        None
+    };
+    let sync_key_missing = options.sync && sync_settings.is_none();
+    if sync_key_missing {
+        info!("sync is off: no SYNC_SECRET is set; make a key with `amber --sync-keygen`");
+    }
+    let mut link = match sync_settings {
+        Some(settings) => Some(Link::start(settings).map_err(io::Error::other)?),
+        None => None,
+    };
     let start = Instant::now();
     let mut phases_completed = 0u32;
     let mut frames_drawn = 0u32;
@@ -1175,7 +1314,11 @@ fn run() -> io::Result<()> {
     speed.change(DEFAULT_SPEED_STEPS, &mut background)?;
     let mut generator = Generator::new();
     let mut ambient = Ambient::start(options.place);
-    let mut notice: Option<Notice> = None;
+    let mut notice: Option<Notice> = sync_key_missing.then(|| Notice {
+        text: "Sync is off: no SYNC_SECRET. Run amber --sync-keygen, then put the key in .env"
+            .into(),
+        until: start + NOTICE,
+    });
     let mut listener = None;
     if options.listen {
         match Listener::start(options.source.clone(), options.sensitivity) {
@@ -1252,6 +1395,8 @@ fn run() -> io::Result<()> {
     text.set_color(shown_color);
     let mut redraw = true;
     let mut selected: Option<String> = None;
+    let mut task_title: Option<String> = None;
+    let mut pending: Vec<Request> = Vec::new();
     let mut scheduled_start_waiting = false;
     #[cfg(feature = "focus-check")]
     match crossterm::execute!(io::stdout(), crossterm::event::EnableFocusChange) {
@@ -1264,19 +1409,88 @@ fn run() -> io::Result<()> {
     let result = ratatui::run(|terminal| {
         loop {
             let now = Instant::now();
+            if let Some(link) = link.as_mut() {
+                for message in link.poll() {
+                    match message {
+                        Inbound::Role(role) => {
+                            notice = Some(Notice {
+                                text: format!("Sync: this machine is now the {role:?}"),
+                                until: now + NOTICE,
+                            });
+                            redraw = true;
+                        }
+                        Inbound::Request(request) => pending.push(request),
+                        Inbound::Notice(text) => {
+                            notice = Some(Notice {
+                                text,
+                                until: now + NOTICE,
+                            });
+                            redraw = true;
+                        }
+                        Inbound::State(state) if link.is_follower() => {
+                            let Some(phase) = Phase::from_wire(state.phase) else {
+                                warn!(phase = ?state.phase, "ignored a state with a phase outside the cycle");
+                                continue;
+                            };
+                            let phase_began = view == View::Task
+                                && state.view == ViewWire::Task
+                                && phase != clock.phase();
+                            if state.clock.paused != clock.is_paused() {
+                                let mut playback = background.playback();
+                                playback.playing = !state.clock.paused;
+                                background.set_playback(playback, now);
+                            }
+                            view = View::from_wire(state.view);
+                            clock.mirror(phase, state.clock, now);
+                            task.shown = state.caption.map(capped);
+                            let title = state.task.map(capped);
+                            if title != task_title {
+                                task_title = title;
+                                #[cfg(feature = "focus-check")]
+                                if let Some(checker) = focus_checker.as_mut() {
+                                    checker.set_task(task_title.clone(), now);
+                                }
+                            }
+                            if phase_began {
+                                phases_completed += 1;
+                                info!(?phase, phases_completed, "phase changed on the primary");
+                                announce(phase);
+                            }
+                            redraw = true;
+                        }
+                        Inbound::Gradient(gradient) if link.is_follower() => {
+                            match apply_wire(&mut background, &mut speed, &gradient) {
+                                Ok(()) => debug!("showing the primary's gradient"),
+                                Err(error) => warn!(%error, "could not show the primary's gradient"),
+                            }
+                            redraw = true;
+                        }
+                        Inbound::State(_) | Inbound::Gradient(_) => {
+                            debug!("state ignored: this machine is the primary");
+                        }
+                    }
+                }
+            }
+            let follower = link.as_ref().is_some_and(Link::is_follower);
             if let Some(due) = schedule.due(Local::now().naive_local()) {
                 info!(
                     %due,
                     ?view,
                     paused = clock.is_paused(),
+                    follower,
                     "scheduled work is due"
                 );
                 match view {
+                    _ if follower => info!("scheduled work is the primary's job; nothing to do here"),
                     View::Home => scheduled_start_waiting = true,
                     View::Task if clock.is_paused() => {
                         toggle_pause(&mut clock, &mut background, now);
+                        let text = format!("Scheduled work {}: resumed", clock_label(due));
+                        if let Some(link) = &link {
+                            link.notice(&text);
+                        }
                         notice = Some(Notice {
-                            text: format!("Scheduled work {}: resumed", clock_label(due)),
+                            text,
                             until: now + NOTICE,
                         });
                         redraw = true;
@@ -1291,10 +1505,57 @@ fn run() -> io::Result<()> {
             } else if scheduled_start_waiting && !generator.is_pending() {
                 scheduled_start_waiting = false;
                 selected = Some(SCHEDULED_TASK.into());
+                let text = format!("Scheduled work: starting {SCHEDULED_TASK}");
+                if let Some(link) = &link {
+                    link.notice(&text);
+                }
                 notice = Some(Notice {
-                    text: format!("Scheduled work: starting {SCHEDULED_TASK}"),
+                    text,
                     until: now + NOTICE,
                 });
+                redraw = true;
+            }
+            for request in std::mem::take(&mut pending) {
+                if let Some(link) = link.as_ref().filter(|link| link.is_follower()) {
+                    link.request(request);
+                    task.cancel();
+                    redraw = true;
+                    continue;
+                }
+                if let Some(link) = &link {
+                    link.interacted();
+                }
+                match request {
+                    Request::TogglePause if view == View::Task => {
+                        toggle_pause(&mut clock, &mut background, now);
+                    }
+                    Request::ResetCycle if view == View::Task => {
+                        clock.reset(now);
+                        info!("cycle reset");
+                    }
+                    Request::NewLyric if view == View::Home => {
+                        let started =
+                            request_moment_gradient(&mut task, &mut generator, moment.as_ref());
+                        info!(started, "new lyric requested at home");
+                    }
+                    Request::SelectTask(chosen) => selected = Some(capped(chosen)),
+                    Request::GoHome if view == View::Task => {
+                        view = View::Home;
+                        task.cancel();
+                        task_title = None;
+                        clock = Clock::new(now);
+                        let mut playback = background.playback();
+                        playback.playing = true;
+                        background.set_playback(playback, now);
+                        #[cfg(feature = "focus-check")]
+                        if let Some(checker) = focus_checker.as_mut() {
+                            checker.set_task(None, now);
+                        }
+                        request_moment_gradient(&mut task, &mut generator, moment.as_ref());
+                        info!(?view, "current time typed; pomodoro reset, back to home");
+                    }
+                    other => debug!(?other, ?view, "request does nothing in this view"),
+                }
                 redraw = true;
             }
             if let Some(chosen) = selected.take() {
@@ -1302,11 +1563,15 @@ fn run() -> io::Result<()> {
                 if let Some(checker) = focus_checker.as_mut() {
                     checker.set_task(Some(chosen.clone()), Instant::now());
                 }
+                task_title = Some(chosen.clone());
                 let description = gradient_description(&chosen, moment.as_ref());
                 let was_pending = generator.is_pending();
                 let cached = generator.submit(&description);
                 let started = cached.is_some() || (!was_pending && generator.is_pending());
                 if let Some(cached) = cached {
+                    if let Some(link) = link.as_mut() {
+                        link.publish_gradient(GradientWire::from(&cached));
+                    }
                     apply(&mut background, &mut speed, &cached)?;
                     task.started_for(chosen);
                     task.succeeded();
@@ -1319,7 +1584,7 @@ fn run() -> io::Result<()> {
                     info!(?view, "first task chosen; pomodoro reset and started");
                 }
             }
-            if view == View::Task && clock.advance(now) {
+            if view == View::Task && !follower && clock.advance(now) {
                 phases_completed += 1;
                 info!(
                     phase = ?clock.phase(),
@@ -1388,7 +1653,7 @@ fn run() -> io::Result<()> {
                 moment = Some(found);
                 // Start from a gradient for the moment, unless a description has
                 // already been asked for in the meantime.
-                if task.shown.is_none() && task.in_flight.is_none() {
+                if task.shown.is_none() && task.in_flight.is_none() && !follower {
                     request_moment_gradient(&mut task, &mut generator, moment.as_ref());
                     redraw = true;
                 }
@@ -1414,6 +1679,9 @@ fn run() -> io::Result<()> {
             if let Some(result) = generator.poll() {
                 match result {
                     Ok(gradient) => {
+                        if let Some(link) = link.as_mut() {
+                            link.publish_gradient(GradientWire::from(&gradient));
+                        }
                         apply(&mut background, &mut speed, &gradient)?;
                         if let Some(phrase) = gradient.phrase {
                             task.describe_as(phrase.text);
@@ -1480,6 +1748,12 @@ fn run() -> io::Result<()> {
                     }
                     None => {}
                 }
+            }
+            if let Some(link) = link.as_mut().filter(|link| !link.is_follower()) {
+                link.publish(
+                    &shared_state(view, &clock, &task, task_title.as_ref(), now),
+                    now,
+                );
             }
             let current = view_label(view, &clock, now);
             if current != shown {
@@ -1564,8 +1838,13 @@ fn run() -> io::Result<()> {
                 background.wait_duration(Instant::now()),
                 match view {
                     View::Home => Some(until_minute_changes(Local::now().time())),
+                    // A follower whose time is up waits for the primary's word, which
+                    // the sync poll below listens for.
+                    View::Task if follower && clock.remaining(Instant::now()).is_zero() => None,
                     View::Task => clock.until_label_changes(Instant::now()),
                 },
+                // Messages from other machines arrive on their own.
+                link.is_some().then_some(Duration::from_millis(25)),
                 // A pending request has to be polled even while paused.
                 (generator.is_pending()
                     || ambient.is_pending()
@@ -1613,26 +1892,11 @@ fn run() -> io::Result<()> {
                                     && typed_time_is_now(&task.text, Local::now().time())
                                         == Some(true);
                                 if going_home {
-                                    view = View::Home;
-                                    task.cancel();
-                                    clock = Clock::new(Instant::now());
-                                    let mut playback = background.playback();
-                                    playback.playing = true;
-                                    background.set_playback(playback, Instant::now());
-                                    #[cfg(feature = "focus-check")]
-                                    if let Some(checker) = focus_checker.as_mut() {
-                                        checker.set_task(None, Instant::now());
-                                    }
-                                    request_moment_gradient(
-                                        &mut task,
-                                        &mut generator,
-                                        moment.as_ref(),
-                                    );
-                                    info!(?view, "current time typed; pomodoro reset, back to home");
+                                    pending.push(Request::GoHome);
                                 } else if let Some(chosen) =
                                     chosen.filter(|chosen| !chosen.is_empty())
                                 {
-                                    selected = Some(chosen.chars().take(MAX_TASK_CHARS).collect());
+                                    pending.push(Request::SelectTask(chosen));
                                 }
                             }
                             KeyCode::Up | KeyCode::Down => {
@@ -1661,6 +1925,9 @@ fn run() -> io::Result<()> {
                     } else {
                         match key.code {
                             KeyCode::Char('t' | 'T') => {
+                                if let Some(link) = &link {
+                                    link.interacted();
+                                }
                                 picker = loader.as_mut().map(|loader| {
                                     loader.refresh();
                                     let mut picker = picker_for(loader);
@@ -1696,19 +1963,13 @@ fn run() -> io::Result<()> {
                                 });
                             }
                             KeyCode::Char(' ') if view == View::Task => {
-                                toggle_pause(&mut clock, &mut background, Instant::now());
+                                pending.push(Request::TogglePause);
                             }
                             KeyCode::Char('r' | 'R') if view == View::Home => {
-                                let started = request_moment_gradient(
-                                    &mut task,
-                                    &mut generator,
-                                    moment.as_ref(),
-                                );
-                                info!(started, "new lyric requested at home");
+                                pending.push(Request::NewLyric);
                             }
                             KeyCode::Char('r' | 'R') if view == View::Task => {
-                                clock.reset(Instant::now());
-                                info!("cycle reset");
+                                pending.push(Request::ResetCycle);
                             }
                             _ => {}
                         }
@@ -2494,6 +2755,7 @@ mod tests {
             listening(Source::Named("BlackHole".into()), 0.5)
         );
         assert_eq!(parse(&["--list-audio"]), Ok(Command::ListAudio));
+        assert_eq!(parse(&["--sync-keygen"]), Ok(Command::SyncKeygen));
         for bad in [
             &["--audio-from"][..],
             &["--sensitivity", "loud"],
@@ -2874,5 +3136,70 @@ mod tests {
         // Resetting is not a phase ending.
         clock.reset(after(1000 * 60));
         assert!(!clock.advance(after(1000 * 60)));
+    }
+
+    #[test]
+    fn a_clock_mirrors_what_the_primary_reports() {
+        let start = Instant::now();
+        let mut primary = Clock::new(start);
+        primary.advance(start + Duration::from_secs(25 * 60 + 30));
+        let now = start + Duration::from_secs(25 * 60 + 30);
+        let mut follower = Clock::new(start);
+        follower.mirror(primary.phase(), primary.wire(now), now);
+        assert_eq!(follower.phase(), Phase::Break(1));
+        assert_eq!(follower.remaining(now), primary.remaining(now));
+
+        primary.toggle_pause(now);
+        follower.mirror(primary.phase(), primary.wire(now), now);
+        assert!(follower.is_paused());
+        let later = now + Duration::from_secs(60);
+        assert_eq!(follower.remaining(later), primary.remaining(now));
+    }
+
+    #[test]
+    fn a_time_left_longer_than_the_phase_is_cut_to_the_phase() {
+        let now = Instant::now();
+        let mut clock = Clock::new(now);
+        let wire = ClockWire {
+            paused: false,
+            remaining_ms: u64::MAX,
+        };
+        clock.mirror(Phase::Work(1), wire, now);
+        assert_eq!(clock.remaining(now), WORK);
+    }
+
+    #[test]
+    fn only_phases_of_the_cycle_come_off_the_wire() {
+        for phase in [Phase::Work(1), Phase::Break(2), Phase::Break(WORK_PERIODS)] {
+            assert_eq!(Phase::from_wire(phase.to_wire()), Some(phase));
+        }
+        for period in [0, WORK_PERIODS + 1, u8::MAX] {
+            assert_eq!(Phase::from_wire(PhaseWire { work: true, period }), None);
+        }
+    }
+
+    #[test]
+    fn sync_is_on_unless_turned_off() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|a| a.to_string()));
+        assert!(Options::default().sync);
+        assert_eq!(
+            parse(&["--no-sync"]),
+            Ok(Command::Clock(Options {
+                sync: false,
+                ..Options::default()
+            }))
+        );
+        assert_eq!(
+            parse(&["--sync-port", "5000", "--sync-peer=desk.local"]),
+            Ok(Command::Clock(Options {
+                sync_port: 5000,
+                sync_peer: Some("desk.local".into()),
+                ..Options::default()
+            }))
+        );
+        assert!(parse(&["--sync-port", "0"]).is_err());
+        assert!(parse(&["--sync-port", "high"]).is_err());
+        assert!(parse(&["--no-sync=yes"]).is_err());
+        assert!(parse(&["--sync"]).is_err(), "sync needs no flag any more");
     }
 }

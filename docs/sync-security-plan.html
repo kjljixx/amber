@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amber sync security plan</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/basecoat-css@1.1.0/dist/basecoat.cdn.min.css">
+<script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.1.0/dist/js/all.min.js" defer></script>
+<style>
+  :root {
+    --bg: #0e0e0e; --surface: #0a0a0a; --fg: #f5f1ea;
+    --mint: #25ff8a; --violet: #c06ddf; --lime: #b7ff54; --amber: #ffa828; --sky: #4fd8ff; --rose: #ff718b;
+    --line: #f5f1ea1f; --muted: #f5f1ea99;
+    --background: var(--bg); --foreground: var(--fg); --card: var(--surface); --card-foreground: var(--fg);
+    --primary: var(--mint); --primary-foreground: #0e0e0e; --muted-foreground: var(--muted);
+    --border: var(--line); --accent: #f5f1ea14; --accent-foreground: var(--fg); --popover: var(--surface);
+    --popover-foreground: var(--fg); --secondary: #f5f1ea14; --secondary-foreground: var(--fg); --input: var(--line); --ring: var(--mint);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 Inter, system-ui, sans-serif; }
+  #toc { position: fixed; inset: 0 auto 0 0; width: 220px; background: var(--surface); border-right: 1px solid var(--line);
+    padding: 56px 12px 12px; overflow-y: auto; transition: transform .2s; z-index: 5; }
+  #toc a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 14px; }
+  #toc a:hover { background: #f5f1ea14; color: var(--fg); }
+  #toc a.on { color: var(--mint); }
+  #navtoggle { position: fixed; top: 12px; left: 12px; z-index: 6; }
+  body.nav-closed #toc { transform: translateX(-100%); }
+  main { margin-left: 220px; padding: 40px 32px 120px; max-width: 1100px; transition: margin .2s; }
+  body.nav-closed main { margin-left: 0; margin-inline: auto; }
+  h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.02em; }
+  h2 { font-size: 22px; margin: 56px 0 16px; letter-spacing: -.01em; scroll-margin-top: 24px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .grow { flex: 1 1 220px; }
+  .stat { padding: 16px 18px; }
+  .stat b { display: block; font-size: 28px; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .mint { color: var(--mint); } .violet { color: var(--violet); } .lime { color: var(--lime); }
+  .amber { color: var(--amber); } .sky { color: var(--sky); } .rose { color: var(--rose); }
+
+  .arch { display: grid; grid-template-columns: 1fr 120px 1fr; gap: 0; align-items: stretch; margin: 8px 0; }
+  .node { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--surface); }
+  .node.primary { border-color: var(--mint); box-shadow: 0 0 0 1px #25ff8a33, 0 0 32px #25ff8a14; }
+  .node h3 { margin: 0 0 2px; font-size: 16px; }
+  .node small { color: var(--muted); }
+  .wires { display: flex; flex-direction: column; justify-content: center; gap: 28px; text-align: center; font-size: 12px; }
+  .wire { position: relative; padding: 0 4px; }
+  .wire::before { content: ""; display: block; height: 2px; margin: 0 0 6px; background: currentColor; opacity: .8; }
+  .wire.down::after, .wire.up::after { content: ""; position: absolute; top: -4px; border: 5px solid transparent; }
+  .wire.down::after { right: 0; border-left: 8px solid currentColor; border-right: 0; }
+  .wire.up::after { left: 0; border-right: 8px solid currentColor; border-left: 0; }
+  .followers { display: flex; flex-direction: column; gap: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid currentColor; cursor: help; background: transparent; }
+  .chip.sync { color: var(--mint); } .chip.local { color: var(--violet); } .chip.only { color: var(--amber); }
+  @media (max-width: 800px) { .arch { grid-template-columns: 1fr; } .wires { flex-direction: row; padding: 12px 0; } main { margin-left: 0; padding: 56px 16px 80px; } #toc { transform: translateX(-100%); } body:not(.nav-closed) #toc { transform: none; } }
+
+  .stages { display: flex; flex-direction: column; gap: 10px; }
+  details.stage { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  details.stage > summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  details.stage > summary::-webkit-details-marker { display: none; }
+  details.stage > summary::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 18px; }
+  details.stage[open] > summary::after { content: "−"; }
+  .num { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #0e0e0e; flex: none; }
+  .stage .body { padding: 0 16px 16px 56px; }
+  .stage .body p { margin: 0 0 10px; color: var(--muted); }
+  pre.code { background: #060606; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.55 ui-monospace, Consolas, monospace; margin: 8px 0; }
+  .add { color: var(--lime); } .chg { color: var(--amber); } .del { color: var(--rose); } .ref { color: var(--sky); } .cm { color: var(--muted); }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+
+  details.fold { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); margin: 10px 0; }
+  details.fold > summary { cursor: pointer; padding: 12px 16px; list-style: none; display: flex; justify-content: space-between; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::after { content: "+"; color: var(--muted); }
+  details.fold[open] > summary::after { content: "−"; }
+  .fold .inner { padding: 0 16px 16px; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table.table { width: 100%; font-size: 14px; }
+  table.table td, table.table th { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+  .cta { display: inline-flex; gap: 8px; align-items: center; }
+  .scale { display: flex; height: 10px; border-radius: 999px; overflow: hidden; gap: 2px; margin: 10px 0 4px; }
+  .scale i { display: block; }
+</style>
+</head>
+<body>
+<button id="navtoggle" class="btn-sm-outline" aria-label="Toggle contents">☰</button>
+<nav id="toc">
+  <a href="#goal">Goal</a>
+  <a href="#design">Design</a>
+  <a href="#flows">Flows</a>
+  <a href="#changes">Code changes</a>
+  <a href="#stages">Stages</a>
+  <a href="#tests">Tests</a>
+  <a href="#limits">Limits</a>
+  <hr style="border-color:var(--line);margin:12px 0">
+  <a href="sync-plan.html">Sync plan</a>
+</nav>
+
+<main>
+  <h1>Amber sync security</h1>
+  <p class="sub">Outsiders on the LAN can neither read nor control Amber. Everyone who holds the key is trusted. Built: all four stages.</p>
+
+  <section id="goal">
+    <div class="row">
+      <div class="card stat grow"><b class="mint">1</b><span>key: 32 random bytes, made by <code>--sync-keygen</code></span></div>
+      <div class="card stat grow"><b class="sky">1</b><span>new dependency: <code>snow</code> 0.10</span></div>
+      <div class="card stat grow"><b class="amber">0</b><span>new message types</span></div>
+      <div class="card stat grow"><b class="violet">4</b><span>stages, each with tests</span></div>
+    </div>
+    <details class="fold">
+      <summary><span>Threat model</span><span class="rose">outsider on the LAN</span></summary>
+      <div class="inner">
+        <table class="table">
+          <thead><tr><th>Outsider</th><th>Can do today</th><th>Can do after</th></tr></thead>
+          <tbody>
+            <tr><td>Read the secret</td><td class="rose">Yes</td><td class="mint">No. It is never sent.</td></tr>
+            <tr><td>Read task text, timer</td><td class="rose">Yes</td><td class="mint">No</td></tr>
+            <tr><td>Change or replay messages</td><td class="rose">Yes</td><td class="mint">No</td></tr>
+            <tr><td>Join as a follower</td><td class="rose">With a guessed secret</td><td class="mint">No</td></tr>
+            <tr><td>Pose as the primary</td><td class="rose">Yes</td><td class="mint">No</td></tr>
+            <tr><td>Send fake UDP beacons</td><td class="rose">Yes</td><td class="amber">Yes: a nuisance only (see Limits)</td></tr>
+          </tbody>
+        </table>
+        <p class="cm" style="color:var(--muted)">Out of scope: anyone who holds the key. They are trusted not to flood, spoof or break anything, so there are no limits for them.</p>
+      </div>
+    </details>
+  </section>
+
+  <h2 id="design">Design</h2>
+  <table class="table">
+    <thead><tr><th>Part</th><th>Now</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td>Joining</td><td class="rose">Secret sent in <code>Hello</code></td><td class="mint">Noise handshake. Secret never sent.</td></tr>
+      <tr><td>TCP messages</td><td class="rose">Plain JSON lines</td><td class="mint">Hex lines of encrypted messages</td></tr>
+      <tr><td>The key</td><td class="rose">Any typed text</td><td class="mint">64 hex characters (32 random bytes)</td></tr>
+      <tr><td>Wrong key</td><td>Primary sends "wrong SYNC_SECRET"</td><td>Primary closes and logs. Follower shows a notice, retries in 5 s.</td></tr>
+      <tr><td>Changed or replayed message</td><td class="rose">Accepted</td><td class="mint">Connection dropped and logged</td></tr>
+      <tr><td>Old build</td><td>N/A</td><td class="amber">Cannot join. Update every machine together.</td></tr>
+      <tr><td>Stays the same</td><td colspan="2">Message types, discovery, failover, who becomes primary, <code>--sync-port</code> and <code>--sync-peer</code>, 3 s join limit, 16-follower cap</td></tr>
+      <tr><td>Log lines</td><td>Cipher not named</td><td>Start log names the cipher; summaries count handshakes failed and messages refused</td></tr>
+    </tbody>
+  </table>
+
+  <details class="fold">
+    <summary><span>Choices</span><span class="mint">Noise_NNpsk0</span></summary>
+    <div class="inner">
+      <table class="table">
+        <thead><tr><th>Choice</th><th>Value</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Pattern</td><td><code>Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s</code></td><td>Key is the only credential</td></tr>
+          <tr><td>First message</td><td>Carries a check value made from the key</td><td>Primary refuses strangers before any key work</td></tr>
+          <tr><td>Prologue</td><td><code>amber-sync/1</code></td><td>A protocol change fails cleanly</td></tr>
+          <tr><td>Handshake payload</td><td>Empty</td><td>Nothing replayable in the handshake</td></tr>
+          <tr><td>First real message</td><td><code>Hello { id }</code>, encrypted</td><td>Id is no longer public</td></tr>
+          <tr><td>Wire form</td><td>Hex text, one line each</td><td>Existing line framing stays</td></tr>
+          <tr><td>Message cap</td><td>65,519 bytes</td><td>Noise limit. Largest message is a few KB.</td></tr>
+          <tr><td>Primary state</td><td><code>Arc&lt;Mutex&lt;Channel&gt;&gt;</code></td><td>Reader and writer thread share it</td></tr>
+          <tr><td>Follower state</td><td>Owned by one thread</td><td>No lock needed</td></tr>
+          <tr><td>Key in logs</td><td>Never. <code>Debug</code> prints "hidden".</td><td><code>Settings</code> derives <code>Debug</code></td></tr>
+          <tr><td>Rekey</td><td>None</td><td>Needs 2<sup>64</sup> messages</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="fold">
+    <summary><span>Why a random key, not a typed one</span><span class="amber">limit of Noise</span></summary>
+    <div class="inner">
+      <p class="cm" style="color:var(--muted)">Noise uses the key as a raw secret. It does not protect a weak one. The first message already holds a check value made from the key. Anyone who records one handshake can test guesses on their own machine. A typed word falls in seconds. 32 random bytes cannot be guessed. A typed passphrase would need a second library (<code>spake2</code>) and more code.</p>
+    </div>
+  </details>
+
+  <details class="fold">
+    <summary><span>Words used here</span><span class="sky">jargon</span></summary>
+    <div class="inner">
+      <table class="table">
+        <thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>Noise</td><td>A standard recipe for a secure handshake</td></tr>
+          <tr><td>Pre-shared key</td><td>The key every machine already has</td></tr>
+          <tr><td>Ephemeral key</td><td>A one-time key for one connection. A later key leak cannot open old recordings.</td></tr>
+          <tr><td>Encrypted message</td><td>Unreadable, and any change is detected</td></tr>
+          <tr><td>Counter</td><td>A number in each message. A replayed message has the wrong number.</td></tr>
+          <tr><td>Hex</td><td>Bytes written as text, two characters each</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <h2 id="flows">Flows</h2>
+  <details class="fold" data-diagram="d-join">
+    <summary><span>Join</span><span class="sky">sequence</span></summary>
+    <div class="inner diagram" id="d-join-out"></div>
+  </details>
+  <details class="fold" data-diagram="d-serve">
+    <summary><span>Primary: one new connection</span><span class="sky">flow chart</span></summary>
+    <div class="inner diagram" id="d-serve-out"></div>
+  </details>
+
+  <script type="text/x-mermaid" id="d-join">
+sequenceDiagram
+  participant F as Follower
+  participant P as Primary
+  F->>P: TCP connect
+  F->>P: msg1 (hex line): ephemeral key + check value from the key
+  alt wrong key
+    P->>P: check fails: log, close
+    P--xF: connection closed
+    F->>F: notice "handshake failed", retry in 5 s
+  else right key
+    P-->>F: msg2 (hex line): ephemeral key
+    Note over F,P: both derive session keys
+    F->>P: Hello(id) [encrypted]
+    P-->>F: Gradient, Standing, State [encrypted]
+  end
+  </script>
+  <script type="text/x-mermaid" id="d-serve">
+flowchart TD
+  A[connection accepted] --> B{msg1 within 3 s?}
+  B -- no --> X[close and log]
+  B -- yes --> C{check value valid?}
+  C -- no --> X
+  C -- yes --> D[send msg2, session keys ready]
+  D --> E{Hello within 3 s?}
+  E -- no --> X
+  E -- yes --> F{16 followers?}
+  F -- yes --> G[send Rejected, close]
+  F -- no --> H[follower joins]
+  H --> I{message opens?}
+  I -- no --> J[drop follower, log]
+  I -- yes --> H
+  </script>
+
+  <h2 id="changes">Code changes</h2>
+  <div class="legend"><span class="add">+ new</span><span class="chg">~ changed</span><span class="del">- removed</span></div>
+  <details class="fold">
+    <summary><span>By file</span><span class="amber">7 files</span></summary>
+    <div class="inner">
+      <pre class="code"><span class="chg">~ <span class="ref">Cargo.toml</span>
+~   snow = { version = "0.10", optional = true }
+~   generation = [..., "dep:snow"]   <span class="cm">// sync builds with this feature; getrandom is already there</span></span>
+
+<span class="add">+ <span class="ref">src/sync/secure.rs</span>
++ const PATTERN: &amp;str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s"
++ const PROLOGUE: &amp;[u8] = b"amber-sync/1"
++ pub const MAX_PLAINTEXT: usize = 65535 - 16
++ pub struct Key([u8; 32])                  <span class="cm">// Debug prints "Key(hidden)"</span>
++   Key::generate() -&gt; Result&lt;Key, String&gt;   <span class="cm">// getrandom</span>
++   Key::parse(text) -&gt; Result&lt;Key, String&gt;  <span class="cm">// 64 hex characters, else an error that says how to fix it</span>
++   Key::to_hex(&amp;self) -&gt; String
++ pub struct Channel { transport: TransportState }
++ pub fn initiate(reader, writer, key, wait) -&gt; Result&lt;Channel, HandshakeError&gt;   <span class="cm">// follower</span>
++ pub fn respond(reader, writer, key, deadline) -&gt; Result&lt;Channel, HandshakeError&gt;  <span class="cm">// primary</span>
++ impl Channel { seal(&amp;mut self, json: &amp;str) -&gt; Result&lt;String, SealError&gt;    <span class="cm">// hex line, over the cap: error</span>
++                open(&amp;mut self, line: &amp;str) -&gt; Result&lt;String, OpenError&gt; }  <span class="cm">// bad hex, bad tag, replay: error</span>
++ enum HandshakeError { NoMessage, WrongKey, Io(io::Error) }</span>
+
+<span class="chg">~ <span class="ref">src/sync/wire.rs</span>
+~   ToPrimary::Hello { id, secret }  →  Hello { id }</span>
+
+<span class="chg">~ <span class="ref">src/sync/mod.rs</span>
+~   Settings { secret: String }  →  Settings { key: Key }
+~   from_env: parse the key. Missing: sync stays off and Amber shows a notice. Malformed: Amber stops and says "run amber --sync-keygen".
+~   start log: pattern name, "key loaded"   <span class="cm">// never the key</span></span>
+
+<span class="chg">~ <span class="ref">src/sync/primary.rs</span>  serve()
+~   after accept: respond() inside the 3 s join limit, then read Hello (opened)
+~   wrong key: log a warning with the address and close   <span class="cm">// no message: nothing can be sent safely</span>
+~   writer thread: for line in queued { seal(line) then write }   <span class="cm">// Hub, welcome() and broadcast stay plain</span>
+~   reader loop: read_line, then open(line), then decode   <span class="cm">// open fails: drop follower, log</span>
+~   lock Channel only while sealing or opening, never during I/O
+~   "too many followers" Rejected is sent sealed
+- turn_away() for a wrong secret
+~   summary log: + handshakes_failed, + messages_refused</span>
+
+<span class="chg">~ <span class="ref">src/sync/follower.rs</span>  run()
+~   after connect: initiate(), then send Hello { id } sealed
+~   handshake fails: notice "Sync: handshake failed. Check that SYNC_SECRET is the same on every machine." and Exit::Rejected
+~   every outgoing line sealed, every incoming line opened; open fails: Exit::Lost, log
+~   summary log: + handshake result</span>
+
+<span class="chg">~ <span class="ref">src/main.rs</span>
+~   enum Command { ..., SyncKeygen }   <span class="cm">// like --alarm-test and --list-audio</span>
+~   "--sync-keygen" prints Key::generate().to_hex() and exits; USAGE lists it</span>
+
+<span class="chg">~ <span class="ref">README.md</span>, <span class="ref">.env.example</span>, <span class="ref">docs/sync-plan.html</span>
+~   how to make and copy the key; remove "Sync is not encrypted"</span>
+
+<span class="cm">  unchanged: framing.rs (hex lines are still lines), discovery.rs, Hub, Link, main loop</span></pre>
+    </div>
+  </details>
+
+  <h2 id="stages">Stages</h2>
+  <div class="scale">
+    <i style="flex:2;background:var(--mint)"></i><i style="flex:3;background:var(--sky)"></i><i style="flex:4;background:var(--amber)"></i><i style="flex:1;background:var(--lime)"></i>
+  </div>
+  <div class="stages">
+    <details class="stage">
+      <summary><span class="num" style="background:var(--mint)">1</span><b>Key and <code>--sync-keygen</code></b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Add <code>snow</code>. Add <code>Key</code> and hex parsing. <code>Settings</code> holds a <code>Key</code>. Add the flag.</p>
+        <p>Done when: <code>amber --sync-keygen</code> prints 64 hex characters, and a malformed <code>SYNC_SECRET</code> stops Amber with a clear message. A missing one leaves sync off.</p>
+      </div>
+    </details>
+    <details class="stage">
+      <summary><span class="num" style="background:var(--sky)">2</span><b>Channel</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p><code>initiate</code>, <code>respond</code>, <code>seal</code>, <code>open</code>. Tested alone over a loopback socket, before any other code uses them.</p>
+        <p>Done when: the tests for the channel pass. If <code>TransportState</code> cannot go behind a <code>Mutex</code> across threads, use <code>StatelessTransportState</code> with one counter for each direction.</p>
+      </div>
+    </details>
+    <details class="stage">
+      <summary><span class="num" style="background:var(--amber)">3</span><b>Wire it in</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Change <code>serve</code> and <code>follower::run</code>. Remove the secret from <code>Hello</code>. Update the existing sync tests to use a key.</p>
+        <p>Done when: every old sync test passes with keys, the wrong-key test sees the notice, and the wire test finds no readable text.</p>
+      </div>
+    </details>
+    <details class="stage">
+      <summary><span class="num" style="background:var(--lime)">4</span><b>Docs and a real run</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>README, <code>.env.example</code>, <code>sync-plan.html</code>. Run Windows and Mac with one key, then with a wrong key. Read <code>sync.log</code> on both.</p>
+        <p>Done when: logs show the handshake, no key, and a refused wrong-key attempt.</p>
+      </div>
+    </details>
+  </div>
+
+  <h2 id="tests">Tests</h2>
+  <table class="table">
+    <thead><tr><th>Test</th><th>Proves</th><th>Stage</th></tr></thead>
+    <tbody>
+      <tr><td><code>a_key_is_64_hex_characters</code></td><td>Good key parses. Short, long, non-hex, empty fail. Round trip. <code>Debug</code> hides it.</td><td>1</td></tr>
+      <tr><td><code>--sync-keygen</code> parse test</td><td>Flag parses to <code>Command::SyncKeygen</code></td><td>1</td></tr>
+      <tr><td><code>the_same_key_opens_what_it_sealed_in_both_directions</code></td><td>Both directions work</td><td>2</td></tr>
+      <tr><td><code>a_different_key_fails_the_handshake_on_both_sides</code></td><td>Responder says WrongKey</td><td>2</td></tr>
+      <tr><td><code>a_changed_message_is_refused</code></td><td>One changed character fails</td><td>2</td></tr>
+      <tr><td><code>a_replayed_message_is_refused</code></td><td>Same line twice: second fails</td><td>2</td></tr>
+      <tr><td><code>a_message_over_the_limit_is_refused</code></td><td>Seal fails over 65,519 bytes</td><td>2</td></tr>
+      <tr><td><code>a_plain_text_line_is_not_a_handshake</code></td><td>Old-style line is refused by the responder</td><td>2</td></tr>
+      <tr><td><code>a_gradient_reaches_a_follower_sealed</code></td><td>Gradient crosses the wire unreadable</td><td>3</td></tr>
+      <tr><td><code>a_follower_that_changes_a_message_is_dropped</code></td><td>Primary drops a follower that sends a changed message</td><td>3</td></tr>
+      <tr><td><code>a_missing_or_malformed_key_stops_sync_before_it_starts</code></td><td>Clear errors. The key stays out of <code>Debug</code>.</td><td>1</td></tr>
+      <tr><td>Existing sync tests, with keys</td><td>Mirror, requests, interaction time, takeover still work</td><td>3</td></tr>
+      <tr><td><code>a_machine_with_the_wrong_key_is_turned_away</code></td><td>Notice names the handshake. Primary logs it.</td><td>3</td></tr>
+      <tr><td><code>nothing_readable_crosses_the_wire</code></td><td>Raw lines hold no caption text. Opened lines do.</td><td>3</td></tr>
+      <tr><td><code>a_plain_text_hello_is_refused</code></td><td>Old-style client is closed</td><td>3</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="limits">Limits</h2>
+  <table class="table">
+    <thead><tr><th>Limit</th><th>Effect</th><th>If it matters</th></tr></thead>
+    <tbody>
+      <tr><td>UDP beacons and answers have no signature</td><td class="amber">Outsider can disturb, not join</td><td>Sign beacons with the key</td></tr>
+      <tr><td>Traffic size and timing visible</td><td>Outsider sees that Amber runs</td><td>None planned</td></tr>
+      <tr><td>Anyone with the key</td><td>Full control</td><td>By design</td></tr>
+      <tr><td>Lost machine</td><td>Its key still works</td><td>New key on the others</td></tr>
+      <tr><td>Weak key typed by hand</td><td class="rose">Can be guessed offline</td><td>Use <code>--sync-keygen</code></td></tr>
+      <tr><td><code>snow</code> has no formal audit</td><td>Low-severity bug fixed in 0.9.5</td><td>Pin 0.10, check advisories</td></tr>
+      <tr><td>Old and new builds</td><td>Cannot talk</td><td>Update all machines together</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, theme: "base", themeVariables: {
+    background: "#0a0a0a", primaryColor: "#0a0a0a", primaryTextColor: "#f5f1ea", primaryBorderColor: "#25ff8a",
+    lineColor: "#4fd8ff", secondaryColor: "#0e0e0e", tertiaryColor: "#0e0e0e", noteBkgColor: "#0e0e0e",
+    actorBkg: "#0a0a0a", actorBorder: "#25ff8a", actorTextColor: "#f5f1ea", signalColor: "#4fd8ff", signalTextColor: "#f5f1ea",
+    labelBoxBkgColor: "#0a0a0a", labelBoxBorderColor: "#ffa828", labelTextColor: "#f5f1ea", loopTextColor: "#f5f1ea",
+    stateBkg: "#0a0a0a", altBackground: "#0e0e0e", fontFamily: "Inter, system-ui, sans-serif" } });
+  document.querySelectorAll("details[data-diagram]").forEach((details) => {
+    details.addEventListener("toggle", async () => {
+      const out = details.querySelector(".diagram");
+      if (!details.open || out.dataset.done) return;
+      const id = details.dataset.diagram;
+      try {
+        const { svg } = await mermaid.render(`svg-${id}`, document.getElementById(id).textContent.trim());
+        out.innerHTML = svg;
+        out.dataset.done = "1";
+      } catch (error) {
+        out.innerHTML = `<pre class="code">${document.getElementById(id).textContent}</pre>`;
+        console.warn("mermaid failed", error);
+      }
+    });
+  });
+</script>
+<script>
+  const toggle = document.getElementById("navtoggle");
+  toggle.addEventListener("click", () => document.body.classList.toggle("nav-closed"));
+  const links = [...document.querySelectorAll("#toc a")];
+  const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+    if (entry.isIntersecting) links.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + entry.target.id));
+  }), { rootMargin: "-20% 0px -70% 0px" });
+  document.querySelectorAll("main section[id], main h2[id]").forEach((el) => observer.observe(el));
+</script>
+</body>
+</html>

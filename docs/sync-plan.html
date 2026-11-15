@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amber LAN sync plan</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/basecoat-css@1.1.0/dist/basecoat.cdn.min.css">
+<script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.1.0/dist/js/all.min.js" defer></script>
+<style>
+  :root {
+    --bg: #0e0e0e; --surface: #0a0a0a; --fg: #f5f1ea;
+    --mint: #25ff8a; --violet: #c06ddf; --lime: #b7ff54; --amber: #ffa828; --sky: #4fd8ff; --rose: #ff718b;
+    --line: #f5f1ea1f; --muted: #f5f1ea99;
+    --background: var(--bg); --foreground: var(--fg); --card: var(--surface); --card-foreground: var(--fg);
+    --primary: var(--mint); --primary-foreground: #0e0e0e; --muted-foreground: var(--muted);
+    --border: var(--line); --accent: #f5f1ea14; --accent-foreground: var(--fg); --popover: var(--surface);
+    --popover-foreground: var(--fg); --secondary: #f5f1ea14; --secondary-foreground: var(--fg); --input: var(--line); --ring: var(--mint);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 Inter, system-ui, sans-serif; }
+  #toc { position: fixed; inset: 0 auto 0 0; width: 220px; background: var(--surface); border-right: 1px solid var(--line);
+    padding: 56px 12px 12px; overflow-y: auto; transition: transform .2s; z-index: 5; }
+  #toc a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 14px; }
+  #toc a:hover { background: #f5f1ea14; color: var(--fg); }
+  #toc a.on { color: var(--mint); }
+  #navtoggle { position: fixed; top: 12px; left: 12px; z-index: 6; }
+  body.nav-closed #toc { transform: translateX(-100%); }
+  main { margin-left: 220px; padding: 40px 32px 120px; max-width: 1100px; transition: margin .2s; }
+  body.nav-closed main { margin-left: 0; margin-inline: auto; }
+  h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.02em; }
+  h2 { font-size: 22px; margin: 56px 0 16px; letter-spacing: -.01em; scroll-margin-top: 24px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .grow { flex: 1 1 220px; }
+  .stat { padding: 16px 18px; }
+  .stat b { display: block; font-size: 28px; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .mint { color: var(--mint); } .violet { color: var(--violet); } .lime { color: var(--lime); }
+  .amber { color: var(--amber); } .sky { color: var(--sky); } .rose { color: var(--rose); }
+
+  .arch { display: grid; grid-template-columns: 1fr 120px 1fr; gap: 0; align-items: stretch; margin: 8px 0; }
+  .node { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--surface); }
+  .node.primary { border-color: var(--mint); box-shadow: 0 0 0 1px #25ff8a33, 0 0 32px #25ff8a14; }
+  .node h3 { margin: 0 0 2px; font-size: 16px; }
+  .node small { color: var(--muted); }
+  .wires { display: flex; flex-direction: column; justify-content: center; gap: 28px; text-align: center; font-size: 12px; }
+  .wire { position: relative; padding: 0 4px; }
+  .wire::before { content: ""; display: block; height: 2px; margin: 0 0 6px; background: currentColor; opacity: .8; }
+  .wire.down::after, .wire.up::after { content: ""; position: absolute; top: -4px; border: 5px solid transparent; }
+  .wire.down::after { right: 0; border-left: 8px solid currentColor; border-right: 0; }
+  .wire.up::after { left: 0; border-right: 8px solid currentColor; border-left: 0; }
+  .followers { display: flex; flex-direction: column; gap: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid currentColor; cursor: help; background: transparent; }
+  .chip.sync { color: var(--mint); } .chip.local { color: var(--violet); } .chip.only { color: var(--amber); }
+  @media (max-width: 800px) { .arch { grid-template-columns: 1fr; } .wires { flex-direction: row; padding: 12px 0; } main { margin-left: 0; padding: 56px 16px 80px; } #toc { transform: translateX(-100%); } body:not(.nav-closed) #toc { transform: none; } }
+
+  .stages { display: flex; flex-direction: column; gap: 10px; }
+  details.stage { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  details.stage > summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  details.stage > summary::-webkit-details-marker { display: none; }
+  details.stage > summary::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 18px; }
+  details.stage[open] > summary::after { content: "−"; }
+  .num { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #0e0e0e; flex: none; }
+  .stage .body { padding: 0 16px 16px 56px; }
+  .stage .body p { margin: 0 0 10px; color: var(--muted); }
+  pre.code { background: #060606; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.55 ui-monospace, Consolas, monospace; margin: 8px 0; }
+  .add { color: var(--lime); } .chg { color: var(--amber); } .del { color: var(--rose); } .ref { color: var(--sky); } .cm { color: var(--muted); }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+
+  details.fold { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); margin: 10px 0; }
+  details.fold > summary { cursor: pointer; padding: 12px 16px; list-style: none; display: flex; justify-content: space-between; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::after { content: "+"; color: var(--muted); }
+  details.fold[open] > summary::after { content: "−"; }
+  .fold .inner { padding: 0 16px 16px; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table.table { width: 100%; font-size: 14px; }
+  table.table td, table.table th { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+  .cta { display: inline-flex; gap: 8px; align-items: center; }
+  .scale { display: flex; height: 10px; border-radius: 999px; overflow: hidden; gap: 2px; margin: 10px 0 4px; }
+  .scale i { display: block; }
+</style>
+</head>
+<body>
+<button id="navtoggle" class="btn-sm-outline" aria-label="Toggle contents">☰</button>
+<nav id="toc">
+  <a href="#goal">Goal</a>
+  <a href="#shape">Shape</a>
+  <a href="#state">What syncs</a>
+  <a href="#flows">Flows</a>
+  <a href="#stages">Stages</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#libs">Libraries</a>
+  <hr style="border-color:var(--line);margin:12px 0">
+  <a href="#security" style="color:var(--rose)">Security</a>
+</nav>
+
+<main>
+  <h1>Amber LAN sync</h1>
+  <p class="sub">One primary. Followers mirror it and send commands.</p>
+
+  <section id="goal">
+    <div class="row">
+      <div class="card stat grow"><b class="mint">1</b><span>writer: the primary</span></div>
+      <div class="card stat grow"><b class="sky">0</b><span>new async runtimes (std threads + <code>mpsc</code>)</span></div>
+      <div class="card stat grow"><b class="amber">7</b><span>synced state items</span></div>
+      <div class="card stat grow"><b class="violet">4</b><span>local-only items</span></div>
+    </div>
+    <details class="fold">
+      <summary><span>Why this works</span></summary>
+      <div class="inner">
+        <p class="cm" style="color:var(--muted)">Amber keeps all state in memory (<code>Clock</code> at <code>src/main.rs:216</code>, <code>selected</code> at <code>main.rs:1254</code>). Nothing is on disk. A single writer means there are no merge rules. Followers hold no authority: they send a <em>command</em>, the primary applies it, then broadcasts the new snapshot.</p>
+      </div>
+    </details>
+  </section>
+
+  <h2 id="shape">Shape</h2>
+  <div class="arch">
+    <div class="node primary">
+      <h3 class="mint">Primary</h3><small>first device up</small>
+      <div class="chips">
+        <span class="chip only" data-tooltip="Calls OpenRouter (Jev) so followers do not pay for it">Jev + weather</span>
+        <span class="chip only" data-tooltip="schedule.due() in main.rs:1267 runs only here">scheduled_work</span>
+        <span class="chip sync" data-tooltip="Owns Clock, View, task">Clock · View · Task</span>
+      </div>
+    </div>
+    <div class="wires">
+      <div class="wire down mint">snapshots →</div>
+      <div class="wire up amber">← commands</div>
+    </div>
+    <div class="followers">
+      <div class="node"><h3 class="sky">Follower A</h3><small>mirror</small></div>
+      <div class="node"><h3 class="sky">Follower B</h3><small>mirror</small></div>
+    </div>
+  </div>
+  <div class="legend">
+    <span class="mint">● synced</span><span class="amber">● primary only</span><span class="violet">● local only</span>
+  </div>
+
+  <h2 id="state">What syncs</h2>
+  <div class="row">
+    <div class="card grow" style="padding:16px">
+      <h3 class="mint" style="margin:0 0 8px">Synced</h3>
+      <div class="chips" style="margin-top:0">
+        <span class="chip sync" data-tooltip="Phase + remaining time + paused flag. Sent as remaining_ms, not a wall-clock deadline, so clock skew does not matter.">Clock</span>
+        <span class="chip sync" data-tooltip="Home or Task">View</span>
+        <span class="chip sync" data-tooltip="selected task title, up to 500 characters">Task</span>
+        <span class="chip sync" data-tooltip="GeneratedGradient (Recipe + speed + Design). Followers call apply() with it.">Gradient</span>
+        <span class="chip sync" data-tooltip="The description shown above the clock, such as the lyric on Home">Caption</span>
+        <span class="chip sync" data-tooltip="Text such as 'Scheduled work: starting …' shows on every device">Notices</span>
+        <span class="chip sync" data-tooltip="Pause, reset, select task, go home, new lyric">Commands ←</span>
+      </div>
+    </div>
+    <div class="card grow" style="padding:16px">
+      <h3 class="violet" style="margin:0 0 8px">Local only</h3>
+      <div class="chips" style="margin-top:0">
+        <span class="chip local" data-tooltip="Each machine listens to its own audio. Excitement does not cross the network.">Audio / Excitement</span>
+        <span class="chip local" data-tooltip="Each screen animates by itself. Two screens may differ by a few frames.">Animation phase</span>
+        <span class="chip local" data-tooltip="The screenshot must show this machine's screen.">Focus check</span>
+        <span class="chip local" data-tooltip="Keys, API tokens, terminal size">Config · .env · size</span>
+      </div>
+    </div>
+  </div>
+
+  <h2 id="flows">Flows</h2>
+  <details class="fold" data-diagram="d-join">
+    <summary><span>Join and command</span><span class="sky">sequence</span></summary>
+    <div class="inner diagram" id="d-join-out"></div>
+  </details>
+  <details class="fold" data-diagram="d-sched">
+    <summary><span>Scheduled work starts</span><span class="sky">sequence</span></summary>
+    <div class="inner diagram" id="d-sched-out"></div>
+  </details>
+  <details class="fold" data-diagram="d-fail">
+    <summary><span>Primary lost</span><span class="sky">state machine</span></summary>
+    <div class="inner diagram" id="d-fail-out"></div>
+  </details>
+
+  <script type="text/x-mermaid" id="d-join">
+sequenceDiagram
+  participant F as Follower
+  participant P as Primary
+  F->>F: UDP broadcast "AMBER?" x3
+  P-->>F: "AMBER! tcp_port"
+  F->>P: Hello(id), after a Noise handshake
+  P-->>F: Gradient + State
+  loop every 2 s
+    P-->>F: State (heartbeat)
+  end
+  F->>P: Request(TogglePause)
+  P->>P: toggle_pause()
+  P-->>F: State
+  F->>F: mirror the state
+  </script>
+  <script type="text/x-mermaid" id="d-sched">
+sequenceDiagram
+  participant P as Primary
+  participant F as Followers
+  P->>P: schedule.due() fires
+  alt Home view
+    P->>P: wait for generator, selected = SCHEDULED_TASK
+  else Task view and paused
+    P->>P: toggle_pause() (resume)
+  end
+  P-->>F: Notice("Scheduled work: starting …")
+  P-->>F: Gradient + State(view=Task)
+  F->>F: show the same notice, enter Task view
+  </script>
+  <script type="text/x-mermaid" id="d-fail">
+stateDiagram-v2
+  [*] --> Probing
+  Probing --> Primary: no answer in 1.5 s
+  Probing --> Follower: primary answers
+  Follower --> Follower: heartbeat
+  Follower --> Candidate: no heartbeat for 5 s
+  Candidate --> Primary: nobody answers
+  Candidate --> Follower: a primary answers
+  Primary --> Follower: outranking primary seen
+  </script>
+
+  <h2 id="stages">Stages</h2>
+  <div class="scale">
+    <i style="flex:2;background:var(--mint)"></i><i style="flex:2;background:var(--sky)"></i><i style="flex:3;background:var(--lime)"></i>
+    <i style="flex:3;background:var(--amber)"></i><i style="flex:2;background:var(--violet)"></i><i style="flex:1;background:var(--rose)"></i>
+  </div>
+  <div class="legend"><span>Stages 1-6: built and tested</span><span class="lime">+ added</span><span class="amber">~ changed</span><span class="rose">− removed</span></div>
+
+  <div class="stages">
+    <details class="stage" open>
+      <summary><span class="num" style="background:var(--mint)">1</span><b>Wire types</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Plain data that crosses the network. Time left replaces <code>Instant</code>.</p>
+        <pre class="code"><span class="add">+ src/sync/wire.rs
++ struct Shared { view: ViewWire, phase: PhaseWire, clock: ClockWire,
++                 caption: Option&lt;String&gt;, task: Option&lt;String&gt; }
++ struct ClockWire { paused: bool, remaining_ms: u64 }
++ struct GradientWire { recipe: Recipe, radians_per_second: f64, energy: f32 }   <span class="cm">// sent apart, only when it changes</span></span>
+<span class="chg">~ <span class="ref">src/main.rs</span>  impl Clock
++   fn wire(&amp;self, now: Instant) -&gt; ClockWire
++   fn mirror(&amp;mut self, phase, clock: ClockWire, now: Instant)   <span class="cm">// cuts the time left to the phase length</span>
++ Phase::to_wire / from_wire   <span class="cm">// from_wire rejects periods outside 1..=4</span>
++ View::to_wire / from_wire
+~ apply(...) now calls apply_wire(...), which rejects non-finite numbers</span>
+<span class="del">- Not needed: serde on Design, Layout, GeneratedGradient (GradientWire carries only what apply() reads)</span></pre>
+      </div>
+    </details>
+
+    <details class="stage">
+      <summary><span class="num" style="background:var(--sky)">2</span><b>Protocol and discovery</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>JSON lines over TCP, capped at 1 MiB a line. UDP finds the primary.</p>
+        <pre class="code"><span class="add">+ src/sync/framing.rs   read_line (length limit, timeouts keep partial lines) · encode · decode
++ src/sync/wire.rs
++ enum ToFollower { State(Shared), Standing(Standing), Gradient(GradientWire), Notice(String), Rejected(String) }
++ enum ToPrimary  { Hello { id }, Request(Request) }
++ enum Request    { TogglePause, ResetCycle, SelectTask(String), GoHome, NewLyric, Interacted }
++ struct Standing { id, last_interaction_ms, priority }   <span class="cm">// outranks(): later time, then higher priority, then lower id</span></span>
+<span class="add">+ src/sync/discovery.rs
++ fn find_primary(settings, own_id) -&gt; Option&lt;SocketAddr&gt;   <span class="cm">// 3 probes, 500 ms apart: broadcast, 127.0.0.1, --sync-peer</span>
++ fn answer_probes(port, standing, stop, demoted)         <span class="cm">// primary: answers, beacons its Standing every 2 s</span></span>
+<span class="del">- Dropped: Ping/Pong. LAN delay is a few ms and the 2 s heartbeat corrects drift.</span></pre>
+      </div>
+    </details>
+
+    <details class="stage">
+      <summary><span class="num" style="background:var(--lime)">3</span><b>Primary server and follower client</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Worker threads with <code>mpsc</code>, like <code>generation</code> and <code>tasks</code>. The host holds one <code>Link</code>.</p>
+        <pre class="code"><span class="add">+ src/sync/primary.rs   accept loop · reader + writer thread per follower · hub of peers
++                       Noise handshake and Hello must finish within 3 s · at most 16 followers
++                       a new follower gets the gradient and the state as it is now
++ src/sync/follower.rs  connect · Hello · send requests · hand messages on · 5 s silence = lost
++ src/sync/mod.rs       Link { start, poll, publish, publish_gradient, notice, request, role }
++                       publish() sends on a change, a clock jump, or a 2 s heartbeat</span></pre>
+      </div>
+    </details>
+
+    <details class="stage">
+      <summary><span class="num" style="background:var(--amber)">4</span><b>Wire into main loop</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Every key that changes shared state pushes a <code>Request</code> onto <code>pending</code>. One place decides: a follower sends it, anyone else acts on it.</p>
+        <pre class="code"><span class="add">+ let mut pending: Vec&lt;Request&gt;;   let mut task_title: Option&lt;String&gt;;   let mut link: Option&lt;Link&gt;;
++ top of loop: link.poll()  →  Request → pending · State/Gradient/Notice → apply (followers only)
++ for request in pending { follower ? link.request(r) : match r { TogglePause, ResetCycle, NewLyric, SelectTask, GoHome } }</span>
+<span class="chg">~ Space      toggle_pause(...)        →  pending.push(Request::TogglePause)
+~ r (Task)   clock.reset(...)         →  pending.push(Request::ResetCycle)
+~ r (Home)   request_moment_gradient  →  pending.push(Request::NewLyric)
+~ Enter      selected = Some(chosen)  →  pending.push(Request::SelectTask(chosen))
+~ Enter      going-home block         →  pending.push(Request::GoHome)   <span class="cm">// block moved into the dispatch</span></span>
+<span class="chg">~ schedule.due(...)   →  a follower logs and does nothing
+~ scheduled start and resume  →  + link.notice(text)</span>
+<span class="chg">~ clock.advance(now)   →  skipped on a follower; the phase comes from the primary, and its chime plays on the change
+~ ambient moment      →  a follower does not ask Jev for a first gradient
+~ after generator result or cached hit  →  link.publish_gradient(...)
+~ before drawing      →  primary: link.publish(shared_state(...), now)</span>
+<span class="del">- Not synced after all: the moment text. Followers still fetch weather, so one can take over.</span></pre>
+      </div>
+    </details>
+
+    <details class="stage">
+      <summary><span class="num" style="background:var(--violet)">5</span><b>Failover and lifecycle</b><span class="badge">done</span></summary>
+      <div class="body">
+        <p>Connection lost or 5 s of silence: the follower waits <code>500 ms + id % 1000</code>, then probes again. Nobody answers: it becomes primary and resumes from the last state and gradient it saw.</p>
+        <pre class="code"><span class="add">+ manage() in src/sync/mod.rs   probe → follower::run or primary::run → on exit, wait and probe again
++ primary: beacon every 2 s; a beacon from another primary that outranks it sets `demoted`
++ follower: drops requests queued before it connected</span>
+<span class="add">+ Who stays primary when two meet, in order:
++   1. later last_interaction_ms   <span class="cm">// any person on any machine of the group; starts at 0; stamped by the primary's clock</span>
++   2. higher priority             <span class="cm">// primary has N, each follower N-1; a follower that takes over keeps its own number</span>
++   3. lower id                    <span class="cm">// random 64-bit, made at start</span>
++ Interaction: Link::interacted() on key actions (Space, r, Enter, opening the task menu) and when a follower's request is applied
++ Standing travels in the welcome, after each interaction, and in every beacon; a follower keeps (time, priority - 1) in Memory
++ Scheduled work starting does not count as an interaction
++ A returning old primary wins a tie, so the group adopts its state. Someone using the group in the gap beats it.</span>
+<span class="cm">  Role changes show as a notice: "Sync: this machine is now the Primary"</span></pre>
+      </div>
+    </details>
+
+    <details class="stage">
+      <summary><span class="num" style="background:var(--rose)">6</span><b>Options, secret, logs, tests</b><span class="badge">done</span></summary>
+      <div class="body">
+        <pre class="code"><span class="chg">~ <span class="ref">src/main.rs</span>  CLI: + --no-sync · --sync-port &lt;n&gt; · --sync-peer &lt;host&gt;   <span class="cm">// no change to amber.json</span>
+~ .env: + SYNC_SECRET   <span class="cm">// 64 hex characters from --sync-keygen; missing: sync stays off with a notice; malformed: Amber stops and says why</span></span>
+<span class="chg">~ <span class="ref">src/log.rs</span>  target "amber::sync" → sync.log
++ startup log: port, peer, id, secret set
++ summaries: followers joined/rejected, requests, states sent, messages received</span>
+<span class="add">+ tests (all pass): wire round trip · line limit · drift · publish rules · discovery
++   · primary and follower over real sockets · wrong secret · missing secret
++   · Clock mirror · phase validation · CLI flags
++   · Standing order · fake beacons demote or not · returning old primary wins a tie
++   · an interaction on either machine sets the group's time · a follower that takes over keeps it, priority - 1</span>
+<span class="del">- Known failure, not from this work: warp::tests::classic_stack_matches_the_original_warp_bit_for_bit</span></pre>
+      </div>
+    </details>
+  </div>
+
+  <h2 id="decisions">Decisions</h2>
+  <table class="table">
+    <thead><tr><th>Topic</th><th>Choice</th><th>Misc.</th></tr></thead>
+    <tbody>
+      <tr><td>Audio, animation phase</td><td class="violet">Local</td><td>You said they need not sync</td></tr>
+      <tr><td>Scheduled work</td><td class="amber">Primary only</td><td>Start and notice show on all devices</td></tr>
+      <tr><td>Clock transfer</td><td>Remaining ms</td><td>No wall-clock needed; heartbeat corrects drift</td></tr>
+      <tr><td>Key</td><td>32 random bytes</td><td>Noise handshake, encrypted messages. See the security plan.</td></tr>
+      <tr><td>Alarm chime</td><td>Every device</td><td>Triggered by synced phase change</td></tr>
+      <tr><td>Primary lost</td><td>Jittered probe</td><td>5 s timeout; two primaries: later interaction, then priority, then lower id</td></tr>
+      <tr><td>Interaction time</td><td>Shared by the group</td><td>Wall-clock ms; a few seconds of skew between groups is accepted</td></tr>
+      <tr><td>Priority</td><td>Primary N, followers N-1</td><td>A follower that takes over keeps its number; no env var</td></tr>
+      <tr><td>Sync</td><td>On by default</td><td><code>--no-sync</code> turns it off; <code>--sync-port</code>, <code>--sync-peer</code> tune it</td></tr>
+      <tr><td>No key</td><td>Sync stays off</td><td>Amber runs alone and shows a notice. A malformed key stops Amber.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="libs">Libraries</h2>
+  <table class="table">
+    <thead><tr><th>Need</th><th>Choice</th><th>Stars</th><th>Misc.</th></tr></thead>
+    <tbody>
+      <tr><td>TCP, UDP</td><td><code>std::net</code></td><td>N/A</td><td>No new dependency</td></tr>
+      <tr><td>JSON</td><td><code>serde_json</code></td><td>N/A</td><td>Already used</td></tr>
+      <tr><td>Encrypted channel</td><td><code>snow</code></td><td>1.1k</td><td>Noise_NNpsk0. Decided.</td></tr>
+      <tr><td>Beacon MAC (stage B)</td><td><code>hmac</code></td><td>379</td><td>RustCrypto/MACs</td></tr>
+      <tr><td>Hash</td><td><code>sha2</code></td><td>2.3k</td><td>RustCrypto/hashes</td></tr>
+      <tr><td>mDNS (optional)</td><td><code>mdns-sd</code></td><td>229</td><td>Only if UDP broadcast fails on a network</td></tr>
+    </tbody>
+  </table>
+
+  <section id="security" style="margin-top:96px;padding:20px 28px;border:2px dashed var(--rose);border-radius:16px;background:#ff718b0a">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <h2 style="margin:0;color:var(--rose)">Security</h2>
+      <a class="btn-sm-outline" href="sync-security-plan.html">Open the security plan</a>
+    </div>
+    <p class="sub" style="margin:8px 0 0">Built: a <code>snow</code> handshake, a random key from <code>--sync-keygen</code>, encrypted messages. Details on its own page.</p>
+  </section>
+</main>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, theme: "base", themeVariables: {
+    background: "#0a0a0a", primaryColor: "#0a0a0a", primaryTextColor: "#f5f1ea", primaryBorderColor: "#25ff8a",
+    lineColor: "#4fd8ff", secondaryColor: "#0e0e0e", tertiaryColor: "#0e0e0e", noteBkgColor: "#0e0e0e",
+    actorBkg: "#0a0a0a", actorBorder: "#25ff8a", actorTextColor: "#f5f1ea", signalColor: "#4fd8ff", signalTextColor: "#f5f1ea",
+    labelBoxBkgColor: "#0a0a0a", labelBoxBorderColor: "#ffa828", labelTextColor: "#f5f1ea", loopTextColor: "#f5f1ea",
+    stateBkg: "#0a0a0a", altBackground: "#0e0e0e", fontFamily: "Inter, system-ui, sans-serif" } });
+  document.querySelectorAll("details[data-diagram]").forEach((details) => {
+    details.addEventListener("toggle", async () => {
+      const out = details.querySelector(".diagram");
+      if (!details.open || out.dataset.done) return;
+      const id = details.dataset.diagram;
+      try {
+        const { svg } = await mermaid.render(`svg-${id}`, document.getElementById(id).textContent.trim());
+        out.innerHTML = svg;
+        out.dataset.done = "1";
+      } catch (error) {
+        out.innerHTML = `<pre class="code">${document.getElementById(id).textContent}</pre>`;
+        console.warn("mermaid failed", error);
+      }
+    });
+  });
+</script>
+<script>
+  const toggle = document.getElementById("navtoggle");
+  toggle.addEventListener("click", () => document.body.classList.toggle("nav-closed"));
+  const links = [...document.querySelectorAll("#toc a")];
+  const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+    if (entry.isIntersecting) links.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + entry.target.id));
+  }), { rootMargin: "-20% 0px -70% 0px" });
+  document.querySelectorAll("main section[id], main h2[id]").forEach((el) => observer.observe(el));
+</script>
+</body>
+</html>

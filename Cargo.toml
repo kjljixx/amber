@@ -17,6 +17,7 @@ ratatui = "0.30"
 xcap = { version = "0.9.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+snow = { version = "0.10", optional = true }
 unicode-width = "0.2"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "json"], optional = true }
 tracing = "0.1.44"
@@ -30,7 +31,7 @@ winit = { version = "0.30", default-features = false, optional = true }
 
 [features]
 default = ["generation", "audio", "focus-check"]
-generation = ["dep:ureq", "dep:getrandom"]
+generation = ["dep:ureq", "dep:getrandom", "dep:snow"]
 audio = ["dep:cpal", "dep:hound", "dep:base64"]
 focus-check = ["generation", "dep:base64", "dep:image", "dep:xcap", "dep:eframe", "dep:winit"]
 
