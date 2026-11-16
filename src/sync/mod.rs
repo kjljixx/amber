@@ -459,6 +459,25 @@ mod tests {
     }
 
     #[test]
+    fn a_followers_scheduled_start_reaches_the_primary_without_counting_as_an_interaction() {
+        let port = free_port();
+        let mut primary = Link::start(settings(port, 1)).unwrap();
+        let follower = Link::start(settings(port, 1)).unwrap();
+
+        follower.request(Request::ScheduledStart("09:00".into()));
+        let request = wait_for(&mut primary, |message| match message {
+            Inbound::Request(request) => Some(request),
+            _ => None,
+        });
+        assert_eq!(request, Some(Request::ScheduledStart("09:00".into())));
+        assert_eq!(
+            standing_of(port).last_interaction_ms,
+            0,
+            "no person acted"
+        );
+    }
+
+    #[test]
     fn a_follower_that_takes_over_keeps_the_time_and_has_a_lower_priority() {
         let port = free_port();
         let mut primary = Link::start(settings(port, 1)).unwrap();

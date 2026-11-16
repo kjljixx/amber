@@ -363,7 +363,9 @@ fn serve(
                         debug!(%address, ?request, "request received");
                         let mut hub = locked(&hub);
                         hub.requests += 1;
-                        hub.touch();
+                        if !matches!(request, Request::ScheduledStart(_)) {
+                            hub.touch();
+                        }
                         drop(hub);
                         if request != Request::Interacted
                             && inbound.send(Inbound::Request(request)).is_err()

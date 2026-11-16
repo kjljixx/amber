@@ -71,7 +71,8 @@
 //! Scheduled work: `amber.json` (or `--config FILE`; see `amber.example.json`)
 //! can list times of day, such as `{"scheduled_work": ["09:00"]}`. At each, every
 //! day, home switches to a task called "Choose a task in Amber", and a task that is
-//! paused resumes. A task that is already running is left alone.
+//! paused resumes. A task that is already running is left alone. With sync on,
+//! a follower's times start work on the primary.
 //!
 //! Jev needs `OPENROUTER_API_KEY` in the environment or a `.env` file; see
 //! docs/generation.md.
@@ -172,6 +173,8 @@ const SCRIM_PADDING: u16 = 2;
 const PURE_WHITE: &str = "pure white";
 /// The task that scheduled work starts at home.
 const SCHEDULED_TASK: &str = "Choose a task in Amber";
+/// Machines that share a schedule each report the same time; one report is enough.
+const SCHEDULE_REPEAT: Duration = Duration::from_secs(60);
 const WHITE: [u8; 3] = [255, 255, 255];
 const PAUSED_ROSE: [u8; 3] = [255, 200, 200];
 const BREAK_MINT: [u8; 3] = [200, 255, 200];
@@ -1398,6 +1401,8 @@ fn run() -> io::Result<()> {
     let mut task_title: Option<String> = None;
     let mut pending: Vec<Request> = Vec::new();
     let mut scheduled_start_waiting = false;
+    let mut scheduled_due: Vec<String> = Vec::new();
+    let mut last_scheduled: Option<(String, Instant)> = None;
     #[cfg(feature = "focus-check")]
     match crossterm::execute!(io::stdout(), crossterm::event::EnableFocusChange) {
         Ok(()) => info!(
@@ -1418,6 +1423,10 @@ fn run() -> io::Result<()> {
                                 until: now + NOTICE,
                             });
                             redraw = true;
+                        }
+                        Inbound::Request(Request::ScheduledStart(label)) => {
+                            info!(%label, "a follower's scheduled work is due");
+                            scheduled_due.push(label);
                         }
                         Inbound::Request(request) => pending.push(request),
                         Inbound::Notice(text) => {
@@ -1480,12 +1489,28 @@ fn run() -> io::Result<()> {
                     follower,
                     "scheduled work is due"
                 );
+                match link.as_ref().filter(|_| follower) {
+                    Some(link) => {
+                        info!("asking the primary to start scheduled work");
+                        link.request(Request::ScheduledStart(clock_label(due)));
+                    }
+                    None => scheduled_due.push(clock_label(due)),
+                }
+            }
+            for label in std::mem::take(&mut scheduled_due) {
+                let repeat = last_scheduled
+                    .as_ref()
+                    .is_some_and(|(last, at)| *last == label && now.duration_since(*at) < SCHEDULE_REPEAT);
+                if repeat {
+                    info!(%label, "scheduled work already handled for this time");
+                    continue;
+                }
+                last_scheduled = Some((label.clone(), now));
                 match view {
-                    _ if follower => info!("scheduled work is the primary's job; nothing to do here"),
                     View::Home => scheduled_start_waiting = true,
                     View::Task if clock.is_paused() => {
                         toggle_pause(&mut clock, &mut background, now);
-                        let text = format!("Scheduled work {}: resumed", clock_label(due));
+                        let text = format!("Scheduled work {label}: resumed");
                         if let Some(link) = &link {
                             link.notice(&text);
                         }

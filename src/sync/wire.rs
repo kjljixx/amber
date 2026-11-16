@@ -104,6 +104,9 @@ pub enum Request {
     /// A person used this machine in a way that changes nothing else, such as
     /// opening the task menu.
     Interacted,
+    /// A scheduled time of day, as `HH:MM`, came round on this machine. No
+    /// person acted, so it does not count as an interaction.
+    ScheduledStart(String),
 }
 
 /// What settles it when two primaries meet: the later interaction wins, then

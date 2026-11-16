@@ -30,7 +30,7 @@ Copy `amber.example.json` to `amber.json` (or pass `--config FILE`) and list tim
 { "scheduled_work": ["09:00", "14:00"] }
 ```
 
-At each time, every day: on the home screen Amber starts a task called "Choose a task in Amber"; on a paused task it resumes; otherwise it does nothing.
+At each time, every day: on the home screen Amber starts a task called "Choose a task in Amber"; on a paused task it resumes; otherwise it does nothing. With sync on, a computer's times also start work on the primary, so they work on any computer.
 
 ## Sync across computers
 
