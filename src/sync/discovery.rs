@@ -1,5 +1,6 @@
 //! Finding the primary: ask on the network, and the primary answers.
 use std::{
+    io::ErrorKind,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     sync::{
         Arc, Mutex, PoisonError,
@@ -61,8 +62,23 @@ pub fn find_primary(settings: &Settings, own_id: u64) -> Option<SocketAddr> {
         }
         let until = Instant::now() + PROBE_WAIT;
         while Instant::now() < until {
-            let Ok((length, from)) = socket.recv_from(&mut buffer) else {
-                break;
+            let (length, from) = match socket.recv_from(&mut buffer) {
+                Ok(received) => received,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::ConnectionReset | ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    debug!(%error, "ignored an unreachable-port error from an earlier probe");
+                    continue;
+                }
+                Err(error) => {
+                    if !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                        warn!(%error, attempt, "discovery receive failed");
+                    }
+                    break;
+                }
             };
             if let Some(Datagram::Primary { port, standing }) = decode(&buffer[..length]) {
                 if standing.id != own_id {
