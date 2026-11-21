@@ -2,6 +2,64 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
 
 use crate::color::{Rgb, rgb_to_oklab};
 
+/// Samples on a grid that starts at pixel column `origin`, with `step` pixels
+/// between nodes.
+struct CoarseGrid {
+    origin: usize,
+    step: usize,
+    columns: usize,
+    nodes: Vec<Rgb>,
+}
+
+impl CoarseGrid {
+    fn new(
+        origin: usize,
+        step: usize,
+        width: usize,
+        height: usize,
+        sample: impl Fn(usize, usize) -> Rgb,
+    ) -> Self {
+        let columns = (width - origin - 1) / step + 2;
+        let rows = (height - 1) / step + 2;
+        let mut nodes = Vec::with_capacity(columns * rows);
+        for row in 0..rows {
+            for column in 0..columns {
+                nodes.push(sample(origin + column * step, row * step));
+            }
+        }
+        Self {
+            origin,
+            step,
+            columns,
+            nodes,
+        }
+    }
+
+    fn at(&self, x: usize, y: usize) -> Rgb {
+        let across = x - self.origin;
+        let (column, row) = (across / self.step, y / self.step);
+        let along_x = (across % self.step) as f32 / self.step as f32;
+        let along_y = (y % self.step) as f32 / self.step as f32;
+        let node = |column: usize, row: usize| self.nodes[row * self.columns + column];
+        let corners = [
+            node(column, row),
+            node(column + 1, row),
+            node(column, row + 1),
+            node(column + 1, row + 1),
+        ];
+        std::array::from_fn(|channel| {
+            let value = |corner: usize| f32::from(corners[corner][channel]);
+            let top = lerp(value(0), value(1), along_x);
+            let bottom = lerp(value(2), value(3), along_x);
+            lerp(top, bottom, along_y).round() as u8
+        })
+    }
+}
+
+fn lerp(from: f32, to: f32, amount: f32) -> f32 {
+    from + (to - from) * amount
+}
+
 #[derive(Clone, Copy, Default)]
 struct ColorPair {
     top: Rgb,
@@ -34,6 +92,17 @@ impl Preview {
     }
 
     pub fn rebuild(&mut self, width: u16, height: u16, sample: impl Fn(f32, f32) -> Rgb) {
+        self.rebuild_with_step(width, height, 1, sample);
+    }
+
+    /// Samples every `step` pixels on both axes and interpolates between them.
+    pub fn rebuild_with_step(
+        &mut self,
+        width: u16,
+        height: u16,
+        step: usize,
+        sample: impl Fn(f32, f32) -> Rgb,
+    ) {
         self.width = width;
         self.height = height;
         self.cells.resize(
@@ -41,16 +110,22 @@ impl Preview {
             ColorPair::default(),
         );
 
-        for row in 0..height {
-            for column in 0..width {
-                let x = (f32::from(column) + 0.5) / f32::from(width);
-                let top_y = (2.0 * f32::from(row) + 0.5) / (2.0 * f32::from(height));
-                let bottom_y = (2.0 * f32::from(row) + 1.5) / (2.0 * f32::from(height));
-                self.cells[usize::from(row) * usize::from(width) + usize::from(column)] =
-                    ColorPair {
-                        top: sample(x, top_y),
-                        bottom: sample(x, bottom_y),
-                    };
+        let (width_pixels, height_pixels) = (usize::from(width), 2 * usize::from(height));
+        let x_at = |x: usize| ((x as f32 + 0.5) / width_pixels as f32).min(1.0);
+        let y_at = |y: usize| ((y as f32 + 0.5) / height_pixels as f32).min(1.0);
+        let exact = |x: usize, y: usize| sample(x_at(x), y_at(y));
+        let grid = (step > 1).then(|| CoarseGrid::new(0, step, width_pixels, height_pixels, exact));
+        let color = |x: usize, y: usize| match &grid {
+            Some(grid) => grid.at(x, y),
+            None => exact(x, y),
+        };
+
+        for row in 0..usize::from(height) {
+            for column in 0..width_pixels {
+                self.cells[row * width_pixels + column] = ColorPair {
+                    top: color(column, 2 * row),
+                    bottom: color(column, 2 * row + 1),
+                };
             }
         }
     }
@@ -82,6 +157,17 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
+
+    #[test]
+    fn coarse_grid_reproduces_a_linear_field() {
+        let field = |x: usize, y: usize| [(2 * x + 3 * y) as u8, x as u8, y as u8];
+        let grid = CoarseGrid::new(10, 2, 20, 8, field);
+        for y in 0..8 {
+            for x in 10..20 {
+                assert_eq!(grid.at(x, y), field(x, y), "pixel ({x}, {y})");
+            }
+        }
+    }
 
     const TOP: Color = Color::Rgb(45, 180, 210);
     const BOTTOM: Color = Color::Rgb(245, 165, 65);

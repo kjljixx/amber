@@ -155,8 +155,8 @@ const DEFAULT_SPEED_STEPS: i32 = 6;
 const MAX_TASK_CHARS: usize = 500;
 /// Frame spacing normally, and while sound is moving the gradient: short enough
 /// to follow a beat.
-const CALM_FRAME: Duration = Duration::from_millis(50);
-const LIVELY_FRAME: Duration = Duration::from_millis(33);
+const CALM_FRAME: Duration = Duration::from_millis(100);
+const LIVELY_FRAME: Duration = Duration::from_millis(66);
 /// How long a message about the audio stays at the top.
 const NOTICE: Duration = Duration::from_secs(4);
 /// While paused and away from Amber, how often the pause overlay is checked
@@ -1314,6 +1314,7 @@ fn run() -> io::Result<()> {
     let mut background =
         GradientView::new(&presets::presets()[1].recipe, start).map_err(io::Error::other)?;
     let mut speed = SpeedControl::new(BASE_SPEED);
+    speed.set_interval(CALM_FRAME, &mut background)?;
     speed.change(DEFAULT_SPEED_STEPS, &mut background)?;
     let mut generator = Generator::new();
     let mut ambient = Ambient::start(options.place);

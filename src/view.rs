@@ -33,6 +33,9 @@ pub struct RenderStats {
 }
 
 /// How often the time spent drawing is summed up in the log.
+/// Pixels between sampled gradient points on both axes; the pixels in between
+/// are interpolated. Larger steps cost less CPU and look softer.
+const SAMPLE_STEP: usize = 4;
 const SUMMARY_EVERY: Duration = Duration::from_secs(10);
 /// Keeps the accent readable on the overlay's near-black panel.
 const ACCENT_MIN_LIGHTNESS: f32 = 0.75;
@@ -68,6 +71,7 @@ impl RenderWindow {
                 sampling_max_ms = self.sampling_max.as_secs_f64() * 1000.0,
                 width = area.width,
                 height = area.height,
+                sample_step = SAMPLE_STEP,
                 "gradient rendered"
             );
             *self = Self::new();
@@ -354,7 +358,9 @@ impl GradientView {
                 );
             }
             self.preview
-                .rebuild(area.width, area.height, |x, y| field.sample(x, y));
+                .rebuild_with_step(area.width, area.height, SAMPLE_STEP, |x, y| {
+                    field.sample(x, y)
+                });
         } else {
             self.preview
                 .rebuild(area.width, area.height, |_, _| [0, 0, 0]);
