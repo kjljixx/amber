@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, ViewportBuilder};
 use tracing::{debug, info, warn};
 
 const DIM_ALPHA: u8 = 200;
-const SCRIM_ALPHA: u8 = 140;
+const SCRIM_ALPHA: u8 = 180;
 const BORDER_WIDTH: f32 = 6.0;
 const BODY_PREFIX: &str = "Please navigate away from the distraction.\nStay focused on ";
 const BODY_COLOR: Color32 = Color32::from_gray(220);
@@ -51,8 +51,10 @@ fn show_layered_window() {}
 /// in front before it opened, taking it from the terminal the user just chose.
 #[cfg(target_os = "macos")]
 fn keep_other_app_in_front(builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>) {
-    use winit::platform::macos::EventLoopBuilderExtMacOS;
-    builder.with_activate_ignoring_other_apps(false);
+    use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+    builder
+        .with_activation_policy(ActivationPolicy::Accessory)
+        .with_activate_ignoring_other_apps(false);
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -967,6 +967,33 @@ fn focus_overlay_message(
     Some((message, accent, task, body))
 }
 
+/// The app in front right now, read with `lsappinfo` (it needs no permission).
+#[cfg(all(feature = "focus-check", target_os = "macos"))]
+fn frontmost_app() -> Option<String> {
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new("lsappinfo").args(args).output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let front = run(&["front"])?;
+    run(&["info", "-only", "name", &front])
+}
+
+/// Log which app is in front when Amber loses focus, and again shortly after,
+/// to show who took the focus. Runs off the UI thread because it starts processes.
+#[cfg(feature = "focus-check")]
+fn log_frontmost_after_focus_lost() {
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(|| {
+        for delay_ms in [0, 300] {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            info!(target: FOCUS_OVERLAY, delay_ms, frontmost = ?frontmost_app(), "app in front after leaving Amber");
+        }
+    });
+}
+
 /// Show the overlay, logging when it cannot be shown.
 #[cfg(feature = "focus-check")]
 fn open_focus_overlay(
@@ -2015,6 +2042,7 @@ fn run() -> io::Result<()> {
                     terminal_focused = false;
                     next_pause_overlay_check = Some(Instant::now());
                     info!(target: FOCUS_OVERLAY, paused = clock.is_paused(), ?view, "left Amber");
+                    log_frontmost_after_focus_lost();
                 }
                 #[cfg(feature = "focus-check")]
                 Event::FocusGained => {

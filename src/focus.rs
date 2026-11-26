@@ -84,7 +84,7 @@ impl FocusChecker {
             pending: None,
             off_task_count: 0,
             interval: INTERVAL,
-            monitor_active: true,
+            monitor_active: false,
             next_check_id: 1,
         })
     }
